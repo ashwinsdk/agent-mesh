@@ -276,6 +276,11 @@ def cmd_doctor(db, a, actor):
     rows = []
     for f in feats:
         rows.append([f] + [adapters.ADAPTERS[n](db.paths).CAPS.get(f, ("-", ""))[0] for n in ("claude", "antigravity", "copilot")])
+    def observed(cli):
+        n = db.one("SELECT COUNT(*) FROM events e JOIN sessions s ON s.id=e.actor WHERE s.cli=? AND e.type IN ('tool','session.start')", (cli,))[0]
+        pre = db.one("SELECT COUNT(*) FROM sessions WHERE cli=?", (cli,))[0]
+        return f"yes ({pre} sess)" if n and pre else "NOT YET (run tests/live/verify_cli.sh)"
+    rows.append(["hooks seen live here", *[observed(n) for n in ("claude", "antigravity", "copilot")]])
     rows.append(["external coordination", "common layer", "common layer", "common layer"])
     print(_tbl(rows, ["feature", "claude", "antigravity", "copilot"]))
     print("\n== Installed clients")

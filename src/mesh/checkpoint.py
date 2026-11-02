@@ -97,7 +97,7 @@ def brief(db: DB, task_id: str | None, who: str, budget: int = 6000) -> str:
         t = tasks.get(db, task_id)
         out += [f"\n## Task {t['id']}: {t['title']} [{t['status']}]", t["description"] or "",
                 f"Acceptance: {t['acceptance'] or '(none stated)'}", f"Files: {t['files']}",
-                f"Previous owner: {t['session_id'] or '-'}  branch: {t['branch'] or '-'}"]
+                f"Current owner: {t['session_id'] or '-'}  branch: {t['branch'] or '-'}"]
     if cp:
         cid, b = cp
         out.append(f"\n## Latest valid checkpoint {cid} (by {b.get('cli')}/{b.get('agent')}, reason={b.get('reason')})")

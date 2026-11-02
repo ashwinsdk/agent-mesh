@@ -42,13 +42,13 @@ def snapshot(paths: Paths, width: int = 110) -> list[tuple[str, str]]:
     add(f" agent-mesh  {time.strftime('%H:%M:%S')}   tasks: " + "  ".join(f"{k}={v}" for k, v in sorted(st.items())) or "no tasks", "head")
     add()
     add(" SESSIONS  (usage source: R=reported E=estimated -=unavailable)", "head")
-    add(f" {'session':<18}{'cli':<12}{'agent':<12}{'task':<11}{'seen':>5}  {'context':<20}{'tokens in/out':>16}  src  model", "dim")
+    add(f" {'session':<24}{'cli':<13}{'agent':<14}{'task':<12}{'seen':>5}  {'context':<20}{'tokens in/out':>16}  src  model", "dim")
     for s in c.execute("SELECT * FROM sessions ORDER BY status, last_seen DESC LIMIT 12"):
         u = c.execute("SELECT * FROM usage WHERE session_id=? ORDER BY ts DESC LIMIT 1", (s["id"],)).fetchone()
         src = {"reported": "R", "estimated": "E"}.get(u["source"], "-") if u else "-"
         pct = u["context_pct"] if u else None
         style = "ok" if s["status"] == "active" and now() - s["last_seen"] < 600 else "dim"
-        add(f" {s['id']:<18}{s['cli']:<12}{(s['agent'] or '-'):<12}{(s['task_id'] or '-'):<11}{_ago(s['last_seen']):>5}  {_bar(pct):<20}"
+        add(f" {s['id']:<24}{s['cli']:<13}{(s['agent'] or '-'):<14}{(s['task_id'] or '-'):<12}{_ago(s['last_seen']):>5}  {_bar(pct):<20}"
             f"{(_num(u['input_tokens']) + '/' + _num(u['output_tokens'])) if u else 'n/a':>16}  {src:<4} {s['model'] or '-'}", style)
         if u and (u["five_hour_pct"] is not None):
             add(f"   quota: 5h {u['five_hour_pct']:.0f}% (resets {time.strftime('%H:%M', time.localtime(u['five_hour_reset'])) if u['five_hour_reset'] else '?'})"

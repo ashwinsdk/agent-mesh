@@ -69,7 +69,10 @@ SECRET_FILES = re.compile(r"(^|/)(\.env(\.[^/]+)?|id_rsa|id_ed25519|credentials|
 
 
 def check_path_write(rel: str) -> str | None:
-    rel = rel.lstrip("./")
+    rel = rel.replace("\\", "/")
+    while rel.startswith("./"):
+        rel = rel[2:]
+    rel = rel.lstrip("/")
     if SECRET_FILES.search(rel) and not rel.endswith((".example", ".sample")):
         return "write to a secrets-bearing file"
     for p in PROTECTED:

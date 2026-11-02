@@ -102,8 +102,9 @@ def integrate(db: DB, task_id: str, actor: str = "integrator") -> dict:
         _rework(db, t, actor, "tests failed after merge", out)
         db.event(actor, "integrate.revert", task_id, {"to": prev})
         return {"ok": False, "stage": "post-merge-validate", "detail": out}
-    if t["status"] == "IN_PROGRESS":
-        tasks.transition(db, task_id, "REVIEW", actor, "integrated; awaiting acceptance")
+    if tasks.get(db, task_id)["status"] == "IN_PROGRESS":
+        # the integrator acts across owners by design; ownership checks are bypassed explicitly and audited
+        tasks.transition(db, task_id, "REVIEW", actor, "integrated; awaiting acceptance", force=True)
     tasks.transition(db, task_id, "COMPLETED", actor, f"integrated into {cfg['git']['integration_branch']}", force=True)
     db.event(actor, "integrate.ok", task_id, {"branch": branch})
     return {"ok": True, "stage": "done", "detail": f"merged into {cfg['git']['integration_branch']} (promote to {base} is a human step: `mesh promote`)"}

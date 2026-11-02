@@ -1,0 +1,16 @@
+[project]
+name = "agent-mesh"
+version = "0.1.0"
+description = "Durable multi-agent coordination for Claude Code, Antigravity and Copilot CLI"
+requires-python = ">=3.11"
+dependencies = []
+
+[project.scripts]
+mesh = "mesh.cli:main"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]

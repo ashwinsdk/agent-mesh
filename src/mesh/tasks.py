@@ -117,7 +117,8 @@ def refresh_ready(db: DB, conn=None) -> list[str]:
 def ready(db: DB, agent: str | None = None) -> list:
     """Tasks that can be started now, ordered by priority; independent ones can run concurrently."""
     refresh_ready(db)
-    rows = db.q("SELECT * FROM tasks WHERE status='READY' AND session_id IS NULL AND kind!='project' ORDER BY priority, created")
+    rows = db.q("SELECT * FROM tasks t WHERE status='READY' AND session_id IS NULL AND kind NOT IN ('project','epic') "
+                "AND NOT EXISTS (SELECT 1 FROM tasks c WHERE c.parent_id=t.id) ORDER BY priority, created")  # containers aren't work
     if agent:
         rows = [r for r in rows if r["agent"] in (None, agent)]
     return rows
