@@ -1,3 +1,6 @@
 __pycache__/
 *.pyc
 .mesh/runtime/
+build/
+dist/
+*.egg-info/

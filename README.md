@@ -2,9 +2,17 @@
 
 Turns any git repository into a coordinated multi-agent workspace for **Claude Code, Antigravity (`agy`) and GitHub Copilot CLI** (and anything that can read `AGENTS.md` / run shell commands). Shared tasks, memory, messages, file locks, checkpoints and honest usage tracking live in the repo (`.mesh/`), not in any CLI's chat history. Python 3.11+ stdlib only; macOS/Linux.
 
+## Install the tool once (any machine)
+```sh
+pipx install git+https://github.com/ashwinsdk/agent-mesh.git          # latest
+pipx install git+https://github.com/ashwinsdk/agent-mesh.git@v0.1.0   # pinned release
+pipx upgrade agent-mesh                                              # later
+```
+This gives you a global `mesh` command (needs Python 3.11+; `pip install` works too). Then in any repo: `mesh init`.
+
 ## Install into a project
 ```sh
-/path/to/agent-mesh/bin/mesh init        # in the target repo; or: /path/to/agent-mesh/install.sh /path/to/repo
+mesh init        # in the target repo; or: /path/to/agent-mesh/install.sh /path/to/repo
 .mesh/bin/mesh doctor                    # capability matrix, integrity, installed clients
 git add .mesh AGENTS.md CLAUDE.md .claude .github .agents .gitignore
 ```
