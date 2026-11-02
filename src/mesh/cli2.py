@@ -62,6 +62,9 @@ def add_parsers(sub):
     x.add_argument("--dry-run", action="store_true")
     x.add_argument("--legacy", action="store_true", help="old behaviour: start an interactive LLM orchestrator session (deprecated)")
     sub.add_parser("report")
+    x = sub.add_parser("limits", help="daily/weekly usage limits as reported by antigravity (`agy -p /usage`) and copilot (`copilot -p /usage`)")
+    x.add_argument("--refresh", action="store_true", help="ask the CLIs now (they run their own /usage; no model turn)")
+    x.add_argument("--out", help="directory to save the raw CLI output (send it to the maintainer if parsing looks wrong)")
     x = sub.add_parser("conduct", help="run the conductor (single instance per project)"); x.add_argument("--daemon", action="store_true")
     x.add_argument("--status", action="store_true"); x.add_argument("--stop", action="store_true")
     x = sub.add_parser("start", help="headless: submit a project prompt to the conductor"); x.add_argument("prompt")
@@ -376,6 +379,31 @@ def cmd_report(db, a, actor):
     from . import snapshot
     snap = snapshot.build(db.paths)
     print(snapshot.render_report(snap))
+    return 0
+
+
+def cmd_limits(db, a, actor):
+    from . import limits as _lim, snapshot
+    if a.refresh:
+        for cli in ("antigravity", "copilot"):
+            r = _lim.refresh(db, cli)
+            print(f"== {cli}: {'ok' if r['ok'] else 'FAILED: ' + str(r['error'])}   command: {r['command'] or 'n/a'}")
+            if a.out:
+                out = Path(a.out); out.mkdir(parents=True, exist_ok=True)
+                (out / f"{cli}.usage.raw.txt").write_text(r["raw"])
+    snap = snapshot.build(db.paths)["limits"]
+    for cli in ("antigravity", "copilot", "claude"):
+        L = snap[cli]
+        print(f"\n{cli}" + (f"   (checked {int(L['age'])}s ago)" if L["age"] is not None else "   (not checked yet: run `mesh limits --refresh`)"))
+        if L["windows"]:
+            for w in L["windows"]:
+                print("  " + _lim.label(w))
+        elif L["raw"]:
+            print("  the CLI reported no daily/weekly figures I could parse; its reply:")
+            for ln in L["raw"].splitlines()[:12]:
+                print("    " + ln)
+        elif L["error"]:
+            print(f"  unavailable: {L['error']}")
     return 0
 
 

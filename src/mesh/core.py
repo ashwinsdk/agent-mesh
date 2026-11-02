@@ -26,6 +26,7 @@ DEFAULT_CONFIG = {
     "billing": {"claude": "unknown", "copilot": "unknown", "antigravity": "unknown"},
     "sessions": {"stale_after": 1800},
     "app": {"cli": ""},
+    "limits": {"enabled": False, "refresh_seconds": 600},
     "conductor": {"auto_approve": "verified-low-risk", "max_rework": 2, "max_task_attempts": 3, "auto_review": False,
                   "idle_exit_seconds": 900, "tick_seconds": 1.0},
     "brain": {"timeout_seconds": 600, "max_turns_per_run": 40, "debounce_seconds": 3, "plan_timeout_seconds": 900},
@@ -62,7 +63,7 @@ def register_session(db: DB, cli: str, agent: str | None = None, native_id: str 
             c.execute("INSERT INTO sessions(id,cli,agent,native_id,pid,host,model,started,last_seen,role,worker_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                       (sid, cli, agent, native_id, pid, socket.gethostname(), model, t, t, role, worker_id))
             if role == "orchestrator":  # exactly one live orchestrator: retire older ones so role-addressed messages have one target
-                n = c.execute("UPDATE sessions SET status='ended', ended=? WHERE role='orchestrator' AND status IN ('active','stale') AND id!=?", (t, sid)).rowcount
+                n = c.execute("UPDATE sessions SET status='ended', ended=?, hidden='cleared' WHERE role='orchestrator' AND status IN ('active','stale') AND id!=?", (t, sid)).rowcount
                 if n:
                     db.event(sid, "session.orchestrator_replaced", None, {"retired": n}, conn=c)
             db.event(sid, "session.start", None, {"cli": cli, "agent": agent}, conn=c)
@@ -107,6 +108,85 @@ def mark_stale(db: DB, stale_after: float = 1800) -> int:
         if rows:
             db.event("mesh", "session.stale", None, {"count": len(rows)}, conn=c)
     return len(rows)
+
+
+LIVE_WORKER_STATES = ("INITIALISING", "PLANNING", "WORKING", "COMMUNICATING", "REVIEWING", "BLOCKED", "PAUSED", "IDLE")
+
+
+def _signal_cli_process(pid: int | None, cli: str) -> bool:
+    """Best effort: SIGTERM an interactive CLI process only if it really looks like that CLI (never a recycled pid)."""
+    import os as _os, signal as _sig, subprocess as _sp
+    if not pid or pid == _os.getpid():
+        return False
+    cmd = _sp.run(["ps", "-o", "command=", "-p", str(pid)], capture_output=True, text=True).stdout.lower()
+    marker = {"antigravity": ("agy", "antigravity"), "claude": ("claude",), "copilot": ("copilot",)}.get(cli, (cli,))
+    if not cmd or not any(m in cmd for m in marker):
+        return False
+    try:
+        _os.kill(pid, _sig.SIGTERM)
+        return True
+    except OSError:
+        return False
+
+
+def kill_session(db: DB, sid: str, actor: str = "human") -> str:
+    """Stop a session (live, idle or finished) and hide it. Workers are terminated; their unfinished task is parked as BLOCKED
+    (not silently re-dispatched) so the user decides with /retry. Interactive CLI sessions get a best-effort SIGTERM."""
+    from . import tasks as _tasks, workers as _w
+    w = db.one("SELECT * FROM workers WHERE id=?", (sid,))
+    s = db.one("SELECT * FROM sessions WHERE id=?", (sid,))
+    if not w and not s:
+        raise MeshError(f"unknown session {sid}")
+    note = ""
+    if w:
+        if w["state"] not in _w.TERMINAL:
+            _w.terminate(db, sid, actor, "killed by user")
+        t = db.one("SELECT status, session_id FROM tasks WHERE id=?", (w["task_id"],)) if w["task_id"] else None
+        if t and t["status"] in ("READY", "ASSIGNED", "IN_PROGRESS") and t["session_id"] in (None, sid):
+            _tasks.transition(db, w["task_id"], "BLOCKED", actor, "worker killed by user; /retry to run it again", force=True)
+            note = f"; task {w['task_id']} is parked (use /retry to run it again)"
+        with db.tx() as c:
+            c.execute("UPDATE workers SET hidden='killed' WHERE id=?", (sid,))
+            c.execute("UPDATE sessions SET hidden='killed', status='killed', ended=COALESCE(ended,?) WHERE id=?", (now(), sid))
+    else:
+        if s["role"] == "orchestrator":
+            raise MeshError("the orchestrator belongs to the run: use /pause or /halt, or /cli to switch it")
+        sig = _signal_cli_process(s["pid"], s["cli"]) if s["status"] == "active" else False
+        with db.tx() as c:
+            c.execute("UPDATE sessions SET hidden='killed', status='killed', ended=COALESCE(ended,?) WHERE id=?", (now(), sid))
+            db.event(actor, "session.killed", None, {"session": sid, "signalled": sig}, conn=c)
+        note = "; its CLI process was asked to stop" if sig else ""
+    db.event(actor, "session.killed", None, {"session": sid})
+    return f"killed {sid}{note}"
+
+
+def clear_sessions(db: DB, scope: str, actor: str = "human") -> int:
+    """Hide finished/idle sessions from the live list. scope: a session id | 'done' | 'idle' | 'all' (everything not live)."""
+    from . import workers as _w
+    n = 0
+    with db.tx() as c:
+        if scope not in ("done", "idle", "all"):
+            r = c.execute("SELECT state FROM workers WHERE id=?", (scope,)).fetchone()
+            srow = c.execute("SELECT status, role FROM sessions WHERE id=?", (scope,)).fetchone()
+            if not r and not srow:
+                raise MeshError(f"unknown session {scope}")
+            live = (r and r["state"] in LIVE_WORKER_STATES) or (not r and srow["status"] == "active")
+            if live:
+                raise MeshError("that session is live: kill it instead (/kill), or wait until it is done")
+            c.execute("UPDATE workers SET hidden='cleared' WHERE id=? AND hidden IS NULL", (scope,))
+            n = c.execute("UPDATE sessions SET hidden='cleared' WHERE id=? AND hidden IS NULL", (scope,)).rowcount
+        else:
+            wstates = {"done": ("COMPLETED",), "idle": (), "all": ("COMPLETED", "FAILED", "TERMINATED")}[scope]
+            if scope == "done":  # a worker ended by approval of its verified task is "done", not "killed"
+                c.execute("UPDATE workers SET hidden='cleared' WHERE hidden IS NULL AND state='TERMINATED' AND ended_reason LIKE 'task verified%'")
+            sstat = {"done": ("ended",), "idle": ("stale",), "all": ("ended", "stale", "failed", "crashed", "terminated", "rolled-over")}[scope]
+            if wstates:
+                ph = ",".join("?" * len(wstates))
+                c.execute(f"UPDATE workers SET hidden='cleared' WHERE hidden IS NULL AND state IN ({ph})", wstates)
+            ph = ",".join("?" * len(sstat))
+            n = c.execute(f"UPDATE sessions SET hidden='cleared' WHERE hidden IS NULL AND role IS NOT 'orchestrator' AND status IN ({ph})", sstat).rowcount
+        db.event(actor, "session.cleared", None, {"scope": scope, "n": n}, conn=c)
+    return n
 
 
 def resolve_actor(db: DB, explicit: str | None = None) -> str:

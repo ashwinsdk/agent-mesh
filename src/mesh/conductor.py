@@ -16,7 +16,7 @@ import time
 from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 
-from . import __version__, adapters, brain, bus, core, eventlog, gitflow, memory, runs, tasks, verify, workers
+from . import __version__, adapters, brain, bus, core, eventlog, gitflow, limits, memory, runs, tasks, verify, workers
 from .core import load_config
 from .db import DB, MeshError, Paths, now
 
@@ -133,6 +133,15 @@ def _verify_job(paths: Paths, task_id: str) -> dict:
         db.close()
 
 
+def _limits_job(paths: Paths, cli: str) -> dict:
+    db = DB(paths)
+    try:
+        r = limits.refresh(db, cli)
+        return {"cli": cli, "ok": r["ok"], "windows": len(r["windows"]), "error": r["error"]}
+    finally:
+        db.close()
+
+
 def _final_job(paths: Paths, run_id: int) -> dict:
     db = DB(paths)
     try:
@@ -161,9 +170,22 @@ class Conductor:
         self.stop_flag = False
         self.handled: set[tuple] = set()
         self.brain_backoff_until = 0.0
+        self.last_limits = 0.0
         self.last_brain_end = 0.0
         self.started = now()
         self._idle_since = now()
+
+    def limits_refresh(self, force: bool = False) -> str:
+        """Ask copilot/antigravity for their own /usage (background threads). The first explicit refresh opts the project in to periodic ones."""
+        if force and not self.cfg()["limits"]["enabled"]:
+            core.set_toml_section(self.paths.config, "limits", {"enabled": True, "refresh_seconds": self.cfg()["limits"]["refresh_seconds"]})
+        self.last_limits = now()
+        started = []
+        for cli in ("antigravity", "copilot"):
+            if adapters.ADAPTERS[cli](self.paths).available() and ("limits", cli) not in self.futs:
+                self.futs[("limits", cli)] = (self.pool.submit(_limits_job, self.paths, cli), {})
+                started.append(cli)
+        return "asked " + ", ".join(started) + " for their usage limits" if started else "no CLI to ask (antigravity/copilot not installed)"
 
     # -- plumbing
     def close(self):
@@ -192,6 +214,9 @@ class Conductor:
         bus.sweep(db)
         core.mark_stale(db, cfg["sessions"]["stale_after"])
         acts += self.process_commands()
+        self.collect_limits()
+        if cfg["limits"]["enabled"] and now() - self.last_limits >= cfg["limits"]["refresh_seconds"]:
+            self.limits_refresh()
         run = runs.active_run(db)
         self.heartbeat(run)
         if not run:
@@ -246,6 +271,13 @@ class Conductor:
         if kind == "stop":
             self.stop_flag = True
             return "stopping"
+        if kind == "kill_session":
+            return core.kill_session(db, p["id"], actor)
+        if kind == "clear_session":
+            n = core.clear_sessions(db, p.get("scope") or p.get("id"), actor)
+            return f"cleared {n} session(s)"
+        if kind == "refresh_limits":
+            return self.limits_refresh(force=True)
         if kind == "promote":
             return gitflow.promote(db) or "promoted"
         if kind in ("approve_item", "reject_item"):
@@ -352,10 +384,21 @@ class Conductor:
         return ["plan:start"]
 
     # -- harvest finished background jobs
+    def collect_limits(self) -> None:
+        """Limits jobs run with or without an active run, so they are harvested separately from run-bound jobs."""
+        for key, (fut, meta) in list(self.futs.items()):
+            if key[0] == "limits" and fut.done():
+                del self.futs[key]
+                try:
+                    res = fut.result()
+                except Exception as e:
+                    res = {"error": repr(e)[:200]}
+                self.db.event("conductor", "limits.done", None, res if isinstance(res, dict) else {})
+
     def collect(self, run) -> list[str]:
         acts = []
         for key, (fut, meta) in list(self.futs.items()):
-            if not fut.done():
+            if key[0] == "limits" or not fut.done():
                 continue
             del self.futs[key]
             try:
@@ -371,6 +414,7 @@ class Conductor:
                 acts += self._verify_done(run, key[1], res)
             elif kind == "final":
                 acts += self._final_done(run, res)
+
         return acts
 
     def _plan_done(self, run, res) -> list[str]:

@@ -79,3 +79,19 @@ Run: `python3 -m unittest discover -s tests` (core, no Textual needed) and, to i
 2. `mesh probe <cli> --hooks --yes` (headless hooks) is still pending from earlier.
 3. The live look and feel in a real terminal (tested headlessly with Textual's pilot; colours, mouse and very small terminals not exercised).
 4. Auto-approval trusts the project's verify commands; weak verification always asks you.
+
+
+---
+# UI revamp status
+| Request | Evidence |
+|---|---|
+| Midnight 80s palette | `TestRevamp.test_midnight_80s_palette_is_applied` (theme colours, rendered backgrounds, every glyph colour from the palette) |
+| See all live/idle/done sessions, not killed/cleared | `TestVisibility`, `test_orchestrator_is_one_row_idle_sessions_stay_visible_until_killed_or_cleared` |
+| Kill idle/done/live sessions | `TestKillWorkers` (live worker stopped, hidden, task parked), UI `k` key test; interactive CLIs get a SIGTERM only if the process really is that CLI |
+| Clear finished/idle | `test_clear_done_session_with_c_and_live_one_is_refused`, `test_bulk_clear_scopes_and_live_sessions_are_protected` |
+| No function keys | `test_no_function_keys_anywhere` (all bindings), keyboard flows via Tab then a/r/Enter |
+| Input bar not hidden by the bottom bar | `test_prompt_bar_is_fully_visible_and_not_overlapped_by_the_footer` at 80×24, 120×30, 160×45 |
+| Antigravity/Copilot daily & weekly limits | `TestLimitParsing`, `TestLimitCollection`, `test_usage_panel_shows_daily_and_weekly_limits_and_honest_placeholders` |
+
+## Limits: what is and is not verified
+The collector runs each CLI's own `/usage` and parses JSON or text tolerantly. **I have not seen real `/usage` output** (running those CLIs from here was not possible), so the parser is tested against plausible shapes and the display falls back to showing the CLI's own words if nothing parses. Run `mesh limits --refresh --out limits-out` and send `limits-out/*.usage.raw.txt` so the parser can be matched to the real format. Antigravity's quota values are not in its log and come from a private endpoint, which mesh deliberately does not call. Copilot's `/usage` is session-scoped plus "usage-limit progress when any limits apply": whether it prints daily/weekly windows for your plan is for the capture to show.

@@ -85,7 +85,8 @@ class TestLayout(AppCase):
             self.assertTrue(await until(pilot, lambda: isinstance(app.screen, ui.TextScreen), 10))
             await pilot.press("escape")
             self.assertTrue(await until(pilot, lambda: not isinstance(app.screen, ui.TextScreen), 5))
-            await pilot.press("f6")
+            app.query_one("#prompt").value = "/usage"
+            await pilot.press("enter")
             self.assertTrue(await until(pilot, lambda: isinstance(app.screen, ui.TextScreen), 10))
             await pilot.press("escape")
             app.query_one("#prompt").value = "/wat"
@@ -122,10 +123,13 @@ class TestNeedsYou(AppCase):
         async with app.run_test(size=(140, 40)) as pilot:
             self.assertTrue(await until(pilot, lambda: "Plan ready" in app.needs_str, 10))
             self.assertTrue(app.query_one("#needs").display)
-            await pilot.press("f4")
+            # the strip is a normal focus stop: Tab from the input reaches it, and its own keys then work (no function keys anywhere)
+            await pilot.press("tab")
+            self.assertTrue(await until(pilot, lambda: app.query_one("#needs").has_focus, 5), app.focused)
+            await pilot.press("enter")
             self.assertTrue(await until(pilot, lambda: isinstance(app.screen, ui.DetailsScreen), 5))
             await pilot.press("escape")
-            await pilot.press("f2")
+            await pilot.press("a")
             self.assertTrue(await until(pilot, lambda: db.q("SELECT 1 FROM commands WHERE kind='approve_item'"), 10))
 
     async def test_hidden_when_nothing_needs_you(self):
@@ -180,7 +184,8 @@ class TestEndToEndThroughTheUI(AppCase):
             self.assertIn("waiting for you", app.top_str)
             self.assertEqual(sum("Build a One Piece 3D site" in l for l in app.activity_lines), 1)  # echoed once, not twice
             self.assertEqual(len([t for t in app.task_view if str(t[0]).startswith("T-")]), 5)  # epic + 4 tasks listed hierarchically
-            await pilot.press("f2")  # approve the plan from the keyboard
+            await pilot.press("tab")  # Tab from the input to the Needs-you strip, then 'a' approves the plan
+            await pilot.press("a")
             def progress():
                 seen["agents"] = max(seen["agents"], len([a for a in app.agent_view if a[2].plain != "Orchestrator"]))
                 return "complete" in app.top_str
@@ -200,7 +205,7 @@ class TestEndToEndThroughTheUI(AppCase):
             self.assertIn("complete", app2.top_str)
             self.assertTrue(any("Run complete" in l for l in app2.activity_lines))
 
-    async def test_orchestrator_is_one_row_and_no_ghost_sessions(self):
+    async def test_orchestrator_is_one_row_idle_sessions_stay_visible_until_killed_or_cleared(self):
         r = self.project(); db = r.db()
         ghost = r.session("antigravity", "ghost0001")
         db.conn.execute("UPDATE sessions SET last_seen=? WHERE id=?", (time.time() - 99999, ghost))
@@ -211,9 +216,106 @@ class TestEndToEndThroughTheUI(AppCase):
         async with app.run_test(size=(140, 40)) as pilot:
             await pilot.pause(0.8)
             names = [a[2].plain for a in app.agent_view]
-            self.assertEqual(names.count("Orchestrator"), 1)
-            self.assertFalse(any("ghost" in str(a[0]) for a in app.agent_view))  # stale sessions are not shown as agents
+            self.assertEqual(names.count("Orchestrator"), 1)  # retired orchestrators are gone
+            row = next(a for a in app.agent_view if a[0] == ghost)
+            self.assertEqual(row[5].plain, "idle")  # a silent session is IDLE and still listed, not hidden
+            self.assertIn("1 idle", app.sessions_title_str)
+            # kill it from the Sessions table with the 'k' key
+            app.query_one("#agents").focus()
+            keys = [a[0] for a in app.agent_view]
+            app.query_one("#agents").move_cursor(row=keys.index(ghost))
+            await pilot.press("k")
+            self.assertTrue(await until(pilot, lambda: db.q("SELECT 1 FROM commands WHERE kind='kill_session'"), 10))
+            conductor.start_daemon(self.paths)
+            self.assertTrue(await until(pilot, lambda: all(a[0] != ghost for a in app.agent_view), 30))  # gone from the list
+            self.assertTrue(any("killed" in l for l in app.activity_lines))  # and the user is told
 
 
 if __name__ == "__main__":
     unittest.main()
+
+
+@unittest.skipUnless(HAVE, "textual not installed")
+class TestRevamp(AppCase):
+    PALETTE = {"#090909", "#171717", "#262626", "#E6E6E6", "#A3A3A3", "#65E572", "#618BFF", "#BD83FF", "#63D6E5", "#E7BD72", "#FF6B6B"}
+
+    async def test_midnight_80s_palette_is_applied(self):
+        r = self.project()
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.5)
+            self.assertEqual(app.theme, "midnight80s")
+            t = ui.MIDNIGHT
+            self.assertEqual((t.background.upper(), t.surface.upper(), t.panel.upper(), t.foreground.upper()), ("#090909", "#171717", "#262626", "#E6E6E6"))
+            self.assertEqual((t.success.upper(), t.primary.upper(), t.secondary.upper(), t.accent.upper(), t.warning.upper(), t.error.upper()),
+                             ("#65E572", "#618BFF", "#BD83FF", "#63D6E5", "#E7BD72", "#FF6B6B"))
+            # the screen really renders on the midnight background, and every colour the view-models use comes from the palette
+            self.assertEqual(app.screen.styles.background.hex.upper()[:7], "#090909")
+            used = {c.upper() for c in [v[1] for v in ui.STATE_GLYPH.values()] + [v[1] for v in ui.TASK_GLYPH.values()]}
+            self.assertTrue(used <= self.PALETTE, used - self.PALETTE)
+            self.assertEqual(app.query_one("#activity").styles.background.hex.upper()[:7], "#171717")
+
+    async def test_no_function_keys_anywhere(self):
+        import re
+        r = self.project()
+        app = ui.MeshApp(self.paths)
+        screens = [ui.TextScreen("x", lambda s: ""), ui.AgentScreen("w"), ui.TaskScreen("T"), ui.DetailsScreen({"title": "", "detail": "", "id": 1}), ui.SetupScreen()]
+        widgets = [ui.SessionTable, ui.TaskTable, ui.NeedsYou]
+        keys = [b.key for b in app.BINDINGS] + [b.key for s in screens for b in s.BINDINGS] + [b.key for w in widgets for b in w.BINDINGS]
+        self.assertFalse([k for k in keys if re.fullmatch(r"f\d+", k)], keys)
+        from mesh.app import commands
+        self.assertNotRegex(ui.render_help({}).renderables[0].plain, r"\bF\d+\b")
+
+    async def test_prompt_bar_is_fully_visible_and_not_overlapped_by_the_footer(self):
+        r = self.project()
+        for size in ((80, 24), (120, 30), (160, 45)):
+            app = ui.MeshApp(self.paths)
+            async with app.run_test(size=size) as pilot:
+                await pilot.pause(0.6)
+                p, f, b = app.query_one("#prompt").region, app.query_one("Footer").region, app.query_one("#body").region
+                self.assertGreaterEqual(p.height, 3, size)  # border + text line + border all drawn
+                self.assertGreaterEqual(p.y, b.y + b.height, f"prompt must start below the body {size}")
+                self.assertLessEqual(p.y + p.height, f.y, f"prompt must end above the footer {size}: {p} vs {f}")
+                self.assertGreaterEqual(f.height, 1)
+                self.assertLessEqual(f.y + f.height, size[1])
+
+    async def test_usage_panel_shows_daily_and_weekly_limits_and_honest_placeholders(self):
+        r = self.project(); db = r.db()
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(160, 45)) as pilot:
+            await pilot.pause(0.8)
+            self.assertIn("not fetched yet", app.usage_str)  # nothing invented before the CLI has been asked
+            self.assertIn("/limits", app.usage_str)
+            with db.tx() as c:
+                for cli, win, rem, reset in (("antigravity", "daily", 62, "in 5h"), ("antigravity", "weekly", 88, "Mon 09:00"), ("copilot", "weekly", 8, "Mon 09:00")):
+                    c.execute("INSERT INTO limits(ts,cli,window,used_pct,remaining_pct,resets_text,detail,source) VALUES(?,?,?,?,?,?,?,?)",
+                              (time.time(), cli, win, 100 - rem, rem, reset, "", "agy -p /usage"))
+                    c.execute("INSERT INTO limit_raw(cli,ts,ok,raw,error,command) VALUES(?,?,1,'raw',NULL,'x') ON CONFLICT(cli) DO UPDATE SET ts=excluded.ts", (cli, time.time()))
+            self.assertTrue(await until(pilot, lambda: "62% left" in app.usage_str, 10), app.usage_str)
+            for needle in ("daily", "weekly", "88% left", "resets in 5h", "resets Mon 09:00", "8% left"):
+                self.assertIn(needle, app.usage_str)
+            app.query_one("#prompt").value = "/limits"
+            await pilot.press("enter")
+            self.assertTrue(await until(pilot, lambda: db.q("SELECT 1 FROM commands WHERE kind='refresh_limits'"), 10))
+
+    async def test_clear_done_session_with_c_and_live_one_is_refused(self):
+        r = self.project(); db = r.db()
+        done = r.session("copilot", "done00001"); core.end_session(db, done)
+        live = r.session("claude", "live00001")
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.8)
+            keys = [a[0] for a in app.agent_view]
+            self.assertIn(done, keys); self.assertIn(live, keys)
+            self.assertIn("done", [a[5].plain for a in app.agent_view if a[0] == done])
+            app.query_one("#agents").focus()
+            app.query_one("#agents").move_cursor(row=keys.index(done))
+            await pilot.press("c")
+            self.assertTrue(await until(pilot, lambda: db.q("SELECT 1 FROM commands WHERE kind='clear_session'"), 10))
+            conductor.start_daemon(self.paths)
+            self.assertTrue(await until(pilot, lambda: done not in [a[0] for a in app.agent_view], 30))
+            self.assertIn(live, [a[0] for a in app.agent_view])
+            app.query_one("#agents").move_cursor(row=[a[0] for a in app.agent_view].index(live))
+            await pilot.press("c")
+            self.assertTrue(await until(pilot, lambda: any("kill it instead" in l for l in app.activity_lines), 30), app.activity_lines[-4:])
+            self.assertIn(live, [a[0] for a in app.agent_view])  # still there

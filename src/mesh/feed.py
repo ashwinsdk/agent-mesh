@@ -96,3 +96,21 @@ def activity(paths: Paths, limit: int = 80) -> list[dict]:
         c.close()
     out.sort(key=lambda x: (x["ts"], x["key"]))
     return out[-limit:]
+
+
+_ECHO_KINDS = {"kill_session", "clear_session", "refresh_limits", "set_cli", "retry_task", "say", "promote", "approve_item", "reject_item", "halt", "resume", "pause"}
+
+
+def command_results(paths: Paths, after_id: int) -> list[dict]:
+    """Outcome of commands the user issued (so a refused kill or a failed promote is visible). `text` is None for ones not worth echoing;
+    the caller still advances its cursor past them."""
+    c = _ro(paths)
+    try:
+        rows = c.execute("SELECT id, kind, status, result FROM commands WHERE id>? AND status!='pending' ORDER BY id", (after_id,)).fetchall()
+    finally:
+        c.close()
+    out = []
+    for r in rows:
+        show = r["status"] == "error" or r["kind"] in _ECHO_KINDS
+        out.append({"id": r["id"], "kind": r["kind"], "status": r["status"], "text": (r["result"] or f"{r['kind']} failed") if show else None})
+    return out

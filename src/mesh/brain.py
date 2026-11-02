@@ -9,6 +9,7 @@ import json
 import os
 import re
 import subprocess
+import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -165,19 +166,25 @@ def parse_output(cli: str, stdout: str, run_dir: Path | None = None) -> Result:
 
 # ------------------------------------------------------------------ sandbox + call
 
-def sandbox(db: DB) -> Path:
-    """Detached, disposable checkout used for read-only planner/brain turns."""
+_SANDBOX_LOCK = threading.Lock()
+
+
+def sandbox(db: DB, name: str = "main") -> Path:
+    """Detached, disposable checkout used for read-only planner/brain/limits turns. One per purpose (they run concurrently),
+    and creation is serialised so two threads never race on `git worktree add`."""
     from .gitflow import base_branch
-    root, path = db.paths.root, db.paths.runtime / "sandbox"
-    cfg = load_config(db.paths)
-    ref = cfg["git"]["integration_branch"]
-    if git(root, "rev-parse", "--verify", "-q", ref, check=False).returncode != 0:
-        ref = base_branch(db)
-    if not path.exists():
-        git(root, "worktree", "add", "--detach", str(path), ref)
-    else:
-        git(root, "checkout", "--detach", "-f", ref, cwd=path, check=False)
-        git(root, "clean", "-fdq", cwd=path, check=False)
+    root = db.paths.root
+    path = db.paths.runtime / (f"sandbox-{name}" if name != "main" else "sandbox")
+    with _SANDBOX_LOCK:
+        cfg = load_config(db.paths)
+        ref = cfg["git"]["integration_branch"]
+        if git(root, "rev-parse", "--verify", "-q", ref, check=False).returncode != 0:
+            ref = base_branch(db)
+        if not path.exists():
+            git(root, "worktree", "add", "--detach", str(path), ref)
+        else:
+            git(root, "checkout", "--detach", "-f", ref, cwd=path, check=False)
+            git(root, "clean", "-fdq", cwd=path, check=False)
     return path
 
 
@@ -196,7 +203,7 @@ def call(db: DB, cli: str, prompt: str, schema: dict, resume_id: str | None, tim
     env = {k: v for k, v in os.environ.items() if k in keep or any(fnmatch.fnmatch(k, p) for p in cfg["workers"]["env_passthrough"])}
     env.update({"MESH_ROOT": str(db.paths.root), "MESH_ROLE": "orchestrator"})
     env.update(extra)
-    cwd = sandbox(db)
+    cwd = sandbox(db, tag.split("-")[0])
     try:
         p = subprocess.run(cmd, cwd=cwd, env=env, capture_output=True, text=True, timeout=timeout, stdin=subprocess.DEVNULL)
     except subprocess.TimeoutExpired:

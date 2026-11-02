@@ -39,6 +39,14 @@ CREATE TABLE IF NOT EXISTS conductor(
   id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER, pid_start TEXT, started REAL, heartbeat REAL, state TEXT, run_id INTEGER, version TEXT)
 """
 
+V5_TABLES = """
+CREATE TABLE IF NOT EXISTS limits(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, cli TEXT NOT NULL, window TEXT NOT NULL, used_pct REAL, remaining_pct REAL,
+  resets_text TEXT, resets_ts REAL, detail TEXT, source TEXT);
+CREATE INDEX IF NOT EXISTS limits_cli ON limits(cli, ts);
+CREATE TABLE IF NOT EXISTS limit_raw(cli TEXT PRIMARY KEY, ts REAL NOT NULL, ok INTEGER NOT NULL, raw TEXT, error TEXT, command TEXT)
+"""
+
 ADD_COLUMNS = {
     "sessions": [("role", "TEXT"), ("worker_id", "TEXT")],
     "tasks": [("verify_cmd", "TEXT DEFAULT ''"), ("risk", "TEXT DEFAULT 'low'"), ("review_required", "INTEGER DEFAULT 0"),
@@ -54,7 +62,7 @@ def _cols(conn, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def migrate(conn, target: int = 4) -> None:
+def migrate(conn, target: int = 5) -> None:
     cur = int((conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() or ["1"])[0])
     if cur >= target:
         return
@@ -83,6 +91,13 @@ def migrate(conn, target: int = 4) -> None:
                 if col not in _cols(conn, "tasks"):
                     conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
             conn.execute("UPDATE meta SET value='4' WHERE key='schema_version'")
+        if cur < 5:
+            for stmt in [x.strip() for x in V5_TABLES.split(";") if x.strip()]:
+                conn.execute(stmt)
+            for table in ("workers", "sessions"):  # hidden = NULL (visible) | 'killed' | 'cleared'
+                if "hidden" not in _cols(conn, table):
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN hidden TEXT")
+            conn.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

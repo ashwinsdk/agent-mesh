@@ -22,7 +22,9 @@ COMMANDS = [
     ("/agent", "<id|#>", "open an agent: live output, restart, terminate, message"),
     ("/task", "<id|#>", "open a task: diff, verification, approve/reject"),
     ("/retry", "<task>", "re-queue a failed or blocked task"),
-    ("/kill", "<worker>", "terminate one worker"),
+    ("/kill", "<session|#>", "stop a session (live, idle or done) and remove it from the list"),
+    ("/clear", "<session|#|done|idle|all>", "remove finished or idle sessions from the list (never live ones)"),
+    ("/limits", "", "fetch daily/weekly usage limits from Copilot and Antigravity (their own /usage)"),
     ("/say", "<worker> <text>", "send a message to a running worker"),
     ("/cli", "<claude|copilot|antigravity>", "switch the orchestrator's CLI"),
     ("/usage", "", "tokens, cost and limits per CLI / model / agent / task"),
@@ -60,12 +62,21 @@ def _ensure_conductor(paths: Paths) -> None:
     conductor.start_daemon(paths)
 
 
+BUCKET_ORDER = {"live": 0, "idle": 1, "failed": 2, "done": 3}
+
+
+def ordered_agents(snap: dict) -> list[dict]:
+    """The order shown in the Sessions pane (so `#3` means the third row): orchestrator, live, idle, failed, done (newest last in each)."""
+    rows = list(snap["agents"])
+    rows.sort(key=lambda a: (0 if a["kind"] == "orchestrator" else 1, BUCKET_ORDER.get(a.get("bucket", "live"), 0), a["started"]))
+    return rows
+
+
 def resolve(snap: dict, token: str, kind: str) -> str | None:
     """Accept a full id, a unique prefix, or a #number as shown in the app."""
     token = token.strip()
     if kind == "worker":
-        rows = [a for a in snap["agents"] if a["kind"] in ("worker", "orchestrator", "session")]
-        ids = [a["id"] for a in rows]
+        ids = [a["id"] for a in ordered_agents(snap)]
     else:
         rows = [t for t in snap["tasks"]["list"] if t["kind"] not in ("epic", "project")]
         ids = [t["id"] for t in rows]
@@ -136,11 +147,23 @@ def execute(paths: Paths, snap: dict, text: str) -> Reply:
             q("retry_task", task=tid)
             return Reply("message", f"Re-queuing {tid}", "ok")
         if cmd == "/kill":
-            wid = resolve(snap, arg, "worker")
+            wid = resolve(snap, arg, "worker") if arg else None
             if not wid:
-                return Reply("message", "Unknown worker.", "warn")
-            q("kill_worker", worker=wid)
-            return Reply("message", f"Terminating {wid}", "warn")
+                return Reply("message", "Usage: /kill <session id or #> (see the Sessions list).", "warn")
+            q("kill_session", id=wid)
+            return Reply("message", f"Killing {wid}…", "warn")
+        if cmd == "/clear":
+            if arg in ("done", "idle", "all"):
+                q("clear_session", scope=arg)
+                return Reply("message", f"Clearing {arg} sessions…", "ok")
+            wid = resolve(snap, arg, "worker") if arg else None
+            if not wid:
+                return Reply("message", "Usage: /clear <session id or #> | done | idle | all", "warn")
+            q("clear_session", scope=wid)
+            return Reply("message", f"Clearing {wid}…", "ok")
+        if cmd == "/limits":
+            q("refresh_limits")
+            return Reply("message", "Asking Antigravity and Copilot for their usage limits (their own `/usage`; no model run). Results appear in Usage.", "info")
         if cmd == "/say":
             tok, _, msg = arg.partition(" ")
             wid = resolve(snap, tok, "worker")

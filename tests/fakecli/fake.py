@@ -32,6 +32,11 @@ def out(obj):
     sys.stdout.flush()
 
 
+if prompt == "/usage":  # the CLI's own usage command: no model, just a report (format is whatever FAKE_USAGE says)
+    sys.stdout.write(os.environ.get("FAKE_USAGE", "Usage\n  Daily: 38% used · resets in 5h 10m\n  Weekly: 12% used · resets Mon 09:00\n") + "\n")
+    sys.exit(0)
+
+
 def _nth(kind):
     p_ = os.path.join(state_dir, f"calls.{kind}")
     n_ = int(open(p_).read()) if os.path.exists(p_) else 0

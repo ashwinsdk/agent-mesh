@@ -69,11 +69,17 @@ def _orch_state(s: dict, busy: bool) -> str:
 
 
 def _agent_state(s: dict) -> str:
-    """State for non-worker sessions (orchestrator / interactive CLIs). Heuristic: derived from liveness only."""
+    """State for non-worker sessions (orchestrator / interactive CLIs). Heuristic: derived from liveness only.
+    Silent sessions are IDLE (still shown, so the user can kill or clear them); finished ones are COMPLETED (done)."""
     if s["status"] == "active":
-        age = now() - s["last_seen"]
-        return "WORKING" if age < 180 else "IDLE" if age < 3600 else "TERMINATED"
-    return {"ended": "COMPLETED", "crashed": "FAILED", "failed": "FAILED"}.get(s["status"], "TERMINATED")
+        return "WORKING" if now() - s["last_seen"] < 180 else "IDLE"
+    if s["status"] == "stale":
+        return "IDLE"
+    return {"ended": "COMPLETED", "crashed": "FAILED", "failed": "FAILED"}.get(s["status"], "COMPLETED")
+
+
+def bucket(state: str) -> str:
+    return {"IDLE": "idle", "THINKING": "live", "COMPLETED": "done", "TERMINATED": "done", "FAILED": "failed"}.get(state, "live")
 
 
 def build(paths: Paths) -> dict:
@@ -86,8 +92,10 @@ def build(paths: Paths) -> dict:
         for d in _rows(c, "SELECT * FROM task_deps"):
             deps[d["task_id"]].append(d["dep_id"])
         by_id = {t["id"]: t for t in tasks}
-        wrows = _rows(c, "SELECT * FROM workers ORDER BY started")
-        sess = _rows(c, "SELECT * FROM sessions ORDER BY started")
+        wrows_all = _rows(c, "SELECT * FROM workers ORDER BY started")
+        wrows = [w for w in wrows_all if not w.get("hidden")]
+        sess_all = _rows(c, "SELECT * FROM sessions ORDER BY started")
+        sess = [x for x in sess_all if not x.get("hidden")]
         series = _series(c)
         u_by_sess = {}
         for r in series:
@@ -101,22 +109,26 @@ def build(paths: Paths) -> dict:
             t = by_id.get(w["task_id"])
             le = wlast[w["id"]]
             agents.append({"id": w["id"], "name": w["agent"], "role": w["role"], "cli": w["cli"], "model": w["model"], "session": w["native_session"] or w["id"],
-                           "pid": w["pid"], "runner_pid": w["runner_pid"], "task": w["task_id"], "state": w["state"],
+                           "pid": w["pid"], "runner_pid": w["runner_pid"], "task": w["task_id"],
+                           "state": ("COMPLETED" if (w["state"] == "TERMINATED" and (w["ended_reason"] or "").startswith("task verified")) else w["state"]),
                            "started": w["started"], "duration": int((w["ended"] or t_now) - w["started"]),
                            "last_activity_age": int(t_now - (w["last_output"] or w["last_event"] or w["started"])),
                            "progress": (1.0 if t and t["status"] == "COMPLETED" else 0.8 if t and t["status"] == "REVIEW" else None),
                            "blocker": w["blocker"] or (w["state_detail"] if w["state"] in ("BLOCKED", "FAILED") else None),
-                           "latest": (w["last_activity"] or (le[0]["type"] if le else None)), "restarts": w["restarts"], "kind": "worker"})
+                           "latest": (w["last_activity"] or (le[0]["type"] if le else None)), "restarts": w["restarts"], "kind": "worker",
+                           "bucket": bucket("COMPLETED" if (w["state"] == "TERMINATED" and (w["ended_reason"] or "").startswith("task verified")) else w["state"])})
         wids = {w["id"] for w in wrows}
         for s in sess:
-            if s["id"] in wids or s["status"] != "active":
-                continue  # ended/stale/terminated sessions live in the Sessions history, not in the live agents list
+            if s["id"] in wids:
+                continue
             agents.append({"id": s["id"], "name": s["agent"] or s["role"] or "interactive", "role": s["role"] or "interactive", "cli": s["cli"], "model": s["model"],
                            "session": s["native_id"] or s["id"], "pid": s["pid"], "runner_pid": None, "task": s["task_id"], "state": _agent_state(s),
                            "started": s["started"], "duration": int((s["ended"] or t_now) - s["started"]), "last_activity_age": int(t_now - s["last_seen"]),
                            "progress": None, "blocker": None, "latest": None, "restarts": 0, "kind": "session", "state_heuristic": True})
+            agents[-1]["bucket"] = bucket(agents[-1]["state"])
             if s["role"] == "orchestrator":
                 agents[-1]["state"] = _orch_state(s, brain_busy)
+                agents[-1]["bucket"] = bucket(agents[-1]["state"])
                 agents[-1]["kind"] = "orchestrator"
                 agents[-1]["name"] = "Orchestrator"
                 agents[-1]["state_heuristic"] = False
@@ -205,6 +217,25 @@ def build(paths: Paths) -> dict:
             alerts.append({"level": "bad", "text": f"{len(fails)} message delivery failure(s)"})
         if halted:
             alerts.append({"level": "bad", "text": "HALTED: new spawns blocked (mesh unhalt)"})
+        lim_cfg = False
+        try:
+            from . import core as _core
+            lim_cfg = bool(_core.load_config(paths)["limits"]["enabled"])
+        except Exception:
+            pass
+        limits = {}
+        for cli in ("antigravity", "copilot"):
+            raw = _rows(c, "SELECT * FROM limit_raw WHERE cli=?", (cli,))
+            wins = _rows(c, "SELECT * FROM limits WHERE cli=? ORDER BY id", (cli,))
+            limits[cli] = {"enabled": lim_cfg, "checked": raw[0]["ts"] if raw else None, "age": (t_now - raw[0]["ts"]) if raw else None,
+                           "ok": bool(raw[0]["ok"]) if raw else None, "error": raw[0]["error"] if raw else None,
+                           "raw": raw[0]["raw"] if raw else "", "command": raw[0]["command"] if raw else "",
+                           "windows": [{"window": w["window"], "used_pct": w["used_pct"], "remaining_pct": w["remaining_pct"], "resets_text": w["resets_text"], "detail": w["detail"]} for w in wins]}
+        q = _rows(c, "SELECT * FROM usage WHERE five_hour_pct IS NOT NULL ORDER BY ts DESC LIMIT 1")
+        limits["claude"] = {"enabled": True, "checked": q[0]["ts"] if q else None, "age": (t_now - q[0]["ts"]) if q else None, "ok": bool(q), "error": None if q else "no statusline data yet (interactive Claude sessions only)",
+                            "raw": "", "command": "claude statusline rate_limits",
+                            "windows": ([{"window": "5-hour", "used_pct": q[0]["five_hour_pct"], "remaining_pct": 100 - q[0]["five_hour_pct"], "resets_text": time.strftime("%a %d %b %H:%M", time.localtime(q[0]["five_hour_reset"])) if q[0]["five_hour_reset"] else None, "detail": ""}] +
+                                        ([{"window": "weekly", "used_pct": q[0]["seven_day_pct"], "remaining_pct": 100 - q[0]["seven_day_pct"], "resets_text": time.strftime("%a %d %b %H:%M", time.localtime(q[0]["seven_day_reset"])) if q[0]["seven_day_reset"] else None, "detail": ""}] if q[0]["seven_day_pct"] is not None else [])) if q else []}
         run = _rows(c, "SELECT * FROM runs ORDER BY id DESC LIMIT 1")
         att = _rows(c, "SELECT * FROM attention WHERE status='open' ORDER BY id")
         cd = _rows(c, "SELECT * FROM conductor WHERE id=1")
@@ -214,7 +245,7 @@ def build(paths: Paths) -> dict:
             "version": VERSION, "generated": t_now,
             "run": ({"id": run[0]["id"], "status": run[0]["status"], "prompt": run[0]["prompt"], "cli": run[0]["cli"], "summary": run[0]["summary"],
                      "error": run[0]["error"], "final_validation": run[0]["final_validation"], "brain_turns": run[0]["brain_turns"]} if run else None),
-            "conductor": cond,
+            "conductor": cond, "limits": limits,
             "attention": [{"id": a["id"], "kind": a["kind"], "subject": a["subject"], "title": a["title"], "detail": a["detail"], "ts": a["ts"]} for a in att],
             "project": {"name": cfg_name, "phase": phase, "progress": pct, "leaf_tasks": len(leaves), "completed_leaf": done, "workstreams": workstreams,
                         "milestones": {"completed": [w["title"] for w in workstreams if w["pct"] >= 1.0], "pending": [w["title"] for w in workstreams if w["pct"] < 1.0]},

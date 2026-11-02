@@ -19,7 +19,15 @@ Run `mesh` in a git repository (first time it offers to set the project up, then
 │ Describe what you want built, or /…  ││ copilot 46k tok 0.31 AIU             │
 ╰──────────────────────────────────────╯╰──────────────────────────────────────╯
 ```
-Type plain text to start a project (or, during a run, to message the orchestrator). Type `/` for commands (`/help`, `/approve`, `/reject`, `/pause`, `/resume`, `/halt`, `/agent`, `/task`, `/retry`, `/say`, `/cli`, `/usage`, `/sessions`, `/promote`, `/report`, `/settings`, `/quit`). Keys: Tab cycles panes, Enter opens the selected agent/task, F2/F3/F4 approve/reject/details, F6 usage, Esc returns to the input, Ctrl+Q leaves.
+**Look and feel:** Midnight 80s palette (midnight black `#090909` background, charcoal `#171717` panels, graphite `#262626` raised elements, soft white text, green = success/live, blue = navigation/actions, purple = AI agents, cyan = focus/highlights, amber = warnings, red = errors).
+
+**Sessions pane** lists every live, idle and done session (headless workers, the orchestrator, and any interactive CLI session mesh has seen) except ones you killed or cleared. Select a row: `Enter` opens it, `k` kills it (live, idle or done; a killed worker's unfinished task is parked as blocked so it is not silently restarted, use `/retry`), `c` clears a finished or idle one (never a live one). Bulk: `/clear done`, `/clear idle`, `/clear all`.
+
+**Keys (no function keys):** `Tab` / `Shift+Tab` move input → Needs you → Sessions → Tasks; on *Needs you*: `a` approve, `r` reject, `Enter` details, `n` next; `Esc` returns to the input; `Ctrl+Q` leaves; `?` help (when not typing).
+
+**Usage & limits:** per-CLI tokens/cost, plus daily/weekly windows for Antigravity and Copilot taken from the CLIs' own `/usage` (`agy -p /usage`, `copilot -p /usage`; no model turn, no private endpoints). Type `/limits` once to fetch them (this also turns on a 10-minute refresh); `mesh limits --refresh --out dir` does the same from a shell and saves the raw output. If a CLI reports no figures you see its own reply, never an estimate. Claude's 5-hour/weekly windows appear when its statusline has reported them.
+
+Type plain text to start a project (or, during a run, to message the orchestrator). Type `/` for commands (`/help`, `/approve`, `/reject`, `/pause`, `/resume`, `/halt`, `/agent`, `/task`, `/retry`, `/say`, `/cli`, `/usage`, `/sessions`, `/kill`, `/clear`, `/limits`, `/promote`, `/report`, `/settings`, `/quit`). Keys: Tab cycles panes, Enter opens the selected agent/task, F2/F3/F4 approve/reject/details, F6 usage, Esc returns to the input, Ctrl+Q leaves.
 
 ## How it works
 - **The conductor** (a background process, one per project) executes the run: it plans, spawns workers for ready tasks, verifies each submission against the real commit, approves and merges low-risk verified work automatically, sends failures back with feedback, restarts or re-routes failed workers, and runs a final validation. It is plain code, so execution cannot stall because a model ended its turn.
