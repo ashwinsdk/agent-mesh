@@ -196,14 +196,15 @@ def view_usage(s, w):
     def table(title, d):
         L.append(("", ""))
         L.append((f" {title}", "head"))
-        L.append((f" {'':<22}{'input':>9}{'output':>9}{'cache rd':>10}{'tokens-from':>12}{'API spend':>11}{'info api-eq':>12}", "dim"))
+        L.append((f" {'':<22}{'input':>9}{'output':>9}{'cache rd':>10}{'tokens-from':>12}{'API spend':>11}{'info api-eq':>12}{'AIU':>9}", "dim"))
         for k, a in sorted(d.items(), key=lambda kv: -kv[1]["total"])[:12]:
             L.append((f" {str(k)[:21]:<22}{snap_mod._n(a['input']):>9}{snap_mod._n(a['output']):>9}{snap_mod._n(a['cache_read']):>10}{a['tokens_known_fraction']:>12}"
-                      f"{'$%.4f' % a['api_spend']:>11}{'$%.4f' % a['informational_api_equiv']:>12}", ""))
+                      f"{'$%.4f' % a['api_spend']:>11}{'$%.4f' % a['informational_api_equiv']:>12}{('%.3f' % a['ai_credits']) if a['ai_credits'] is not None else 'n/a':>9}", ""))
     table("GLOBAL", {"all": u["global"]})
     for t, d in (("PER CLI", u["per_cli"]), ("PER MODEL", u["per_model"]), ("PER AGENT", u["per_agent"]), ("PER TASK", u["per_task"]), ("PER SESSION", u["per_session"])):
         table(t, d)
     L.append(("", ""))
+    L.append((" AIU = GitHub Copilot's metering unit as reported by its CLI (nano-AIU / 1e9); it is not converted to currency", "dim"))
     L.append((f" avg API cost per completed task: " + (f"${u['avg_api_cost_per_completed_task']:.4f}" if u["avg_api_cost_per_completed_task"] else "n/a (no api-mode spend)"), ""))
     q = u["quota"]
     L.append((" quota: " + (f"5h {q['five_hour_pct']:.0f}% used, resets {time.strftime('%H:%M', time.localtime(q['five_hour_reset'])) if q['five_hour_reset'] else '?'}; "

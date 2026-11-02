@@ -43,9 +43,9 @@ def emit_init():
     if fmt == "claude":
         out({"type": "system", "subtype": "init", "session_id": sid, "model": "fake-model"})
     elif fmt == "antigravity":
-        out({"event": "init", "model": "fake-model", "conversation_id": sid})
+        out({"event": "init", "conversation_id": sid, "init": {"cwd": os.getcwd(), "tools": [], "permission_mode": "always-proceed", "model": "fake-model"}})
     else:
-        out({"type": "init", "sessionId": sid, "model": "fake-model"})
+        out({"type": "session.tools_updated", "data": {"model": "fake-model"}})
 
 
 def emit_text(t, tool=None, inp=None):
@@ -56,15 +56,18 @@ def emit_text(t, tool=None, inp=None):
         tot["input"] += 10; tot["output"] += 5; tot["cache_read"] += 100
     elif fmt == "antigravity":
         tot["input"] += 10; tot["output"] += 5
-        ev = {"event": "step_update", "conversation_id": sid, "step_type": "tool" if tool else "agent_response", "state": "DONE",
-              "usage": {"input_tokens": tot["input"], "output_tokens": tot["output"], "total_tokens": tot["input"] + tot["output"]}}
+        su = {"conversation_id": sid, "step_index": 1, "state": "ACTIVE" if tool else "DONE", "step_type": "tool" if tool else "agent_response",
+              "usage": {"input_tokens": 10, "output_tokens": 5, "thinking_tokens": 0, "cache_read_tokens": 0, "total_tokens": 15}}
         if tool:
-            ev.update({"tool_name": tool, "tool_info": {"name": tool, "parameters": inp or {}}})
+            su.update({"tool_name": tool, "tool_info": {"name": tool, "parameters": inp or {}}})
         else:
-            ev["text_delta"] = t
-        out(ev)
+            su["text_delta"] = t
+        out({"event": "step_update", "step_update": su})
     else:
-        out({"type": "tool_call" if tool else "message", "sessionId": sid, "toolName": tool, "text": t})
+        if tool:
+            out({"type": "tool.execution_start", "data": {"toolName": tool, "arguments": inp or {}}})
+        else:
+            out({"type": "assistant.message_delta", "data": {"deltaContent": t}})
 
 
 def finish(ok=True, err=None, code=0):
@@ -76,14 +79,20 @@ def finish(ok=True, err=None, code=0):
              "modelUsage": {"fake-model": {"contextWindow": 200000}}}
         out(r)
     elif fmt == "antigravity":
-        out({"event": "result", "conversation_id": sid, "status": "SUCCESS" if ok else "ERROR", "response": "done", "error": err,
-             "num_turns": 1, "usage": {"input_tokens": tot["input"], "output_tokens": tot["output"]}})
+        out({"event": "result", "result": {"conversation_id": sid, "status": "SUCCESS" if ok else "ERROR", "response": "done", "error": err,
+                                           "num_turns": 1, "usage": {"input_tokens": tot["input"], "output_tokens": tot["output"]}}})
     else:
-        out({"type": "result", "sessionId": sid, "result": "done", "error": err})
+        if err:
+            out({"type": "session.error", "data": {"message": err}})
+        out({"type": "session.usage_checkpoint", "data": {"totalNanoAiu": 500000000, "totalPremiumRequests": 0}})
+        out({"type": "result", "sessionId": sid, "exitCode": code, "usage": {"premiumRequests": 0}})
         p = os.environ.get("COPILOT_OTEL_FILE_EXPORTER_PATH")
         if p:
+            a = {"gen_ai.conversation.id": sid, "gen_ai.usage.input_tokens": 120, "gen_ai.usage.output_tokens": 30,
+                 "gen_ai.usage.cache_read.input_tokens": 10, "github.copilot.nano_aiu": 500000000.0}
             with open(p, "a") as f:
-                f.write(json.dumps({"attributes": {"gen_ai.usage.input_tokens": 120, "gen_ai.usage.output_tokens": 30}}) + "\n")
+                f.write(json.dumps({"type": "span", "name": "chat auto", "attributes": {**a, "gen_ai.operation.name": "chat"}}) + "\n")
+                f.write(json.dumps({"type": "span", "name": "invoke_agent", "attributes": {**a, "gen_ai.operation.name": "invoke_agent"}}) + "\n")
     sys.exit(code)
 
 
@@ -105,6 +114,19 @@ emit_init()
 for step in sc:
     if step.get("when_title") and step["when_title"] not in task_info().get("title", ""):
         continue
+    if step.get("hook"):  # simulate a CLI that fires the project's PostToolUse hook and shows injected context to the model
+        payload = {"session_id": sid, "sessionId": sid, "conversationId": sid, "cwd": os.getcwd(), "tool_name": "Bash",
+                   "toolCall": {"name": "run_command", "args": {}}}
+        ev = "pre_invocation" if fmt == "antigravity" else "post_tool"
+        r = subprocess.run(f".mesh/bin/mesh hook {fmt} {ev}", shell=True, input=json.dumps(payload), capture_output=True, text=True)
+        txt = r.stdout
+        try:
+            j = json.loads(r.stdout)
+            txt = j.get("hookSpecificOutput", {}).get("additionalContext") or j.get("additionalContext") or \
+                (j.get("injectSteps") or [{}])[0].get("systemMessage", {}).get("systemMessage") or ""
+        except ValueError:
+            pass
+        open(step["hook"], "w").write(txt if "PROBE-TOKEN" in txt else "none")
     if step.get("owned_file"):
         pat = json.loads(task_info().get("files") or "[]")[0]
         d = pat[:-3] if pat.endswith("/**") else os.path.dirname(pat)

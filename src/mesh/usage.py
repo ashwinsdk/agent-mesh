@@ -16,7 +16,7 @@ def record(db: DB, session: str | None, cli: str, source: str, task_id: str | No
     assert source in SOURCES
     keys = ["input_tokens", "output_tokens", "cache_read", "cache_create", "context_tokens", "context_size",
             "context_pct", "cost_usd", "five_hour_pct", "five_hour_reset", "seven_day_pct", "seven_day_reset",
-            "tool_calls", "requests", "worker_id", "billing_mode", "cost_source", "turn"]
+            "tool_calls", "requests", "worker_id", "billing_mode", "cost_source", "turn", "ai_credits"]
     m = {**m, "worker_id": worker_id, "billing_mode": billing_mode, "cost_source": cost_source, "turn": turn}
     vals = [m.get(k) for k in keys]
     with db.tx() as c:

@@ -64,6 +64,7 @@ def add_parsers(sub):
     x = sub.add_parser("probe", help="run ONE tiny headless turn in a real CLI and report how well mesh's stream parser understood it")
     x.add_argument("client", choices=["claude", "copilot", "antigravity"]); x.add_argument("--out", default="probe-output")
     x.add_argument("--yes", action="store_true", help="confirm: this runs the real CLI with tool approvals pre-granted")
+    x.add_argument("--hooks", action="store_true", help="also verify that a headless run fires mesh hooks and receives an injected mailbox message")
     x.add_argument("--prompt", default="Create a file named hello.txt containing the word hi using your file tool, then reply with the single word done.")
 
 
@@ -373,30 +374,68 @@ def cmd_probe(db, a, actor):
     scratch = Path(tempfile.mkdtemp(prefix=f"mesh-probe-{a.client}-"))
     core.git(scratch, "init", "-q", "-b", "main"); (scratch / "README.md").write_text("probe\n")
     core.git(scratch, "add", "-A"); core.git(scratch, "-c", "user.email=p@p", "-c", "user.name=probe", "commit", "-qm", "probe")
-    cmd, extra = ad.headless_cmd(a.prompt, None, None, None, cfg, str(out))
+    prompt = a.prompt
+    token = "PROBE-TOKEN-7731"
+    if a.hooks:
+        # a mesh-initialised scratch project with a registered worker-like session and one pending message for it
+        pkg_parent = str(Path(__file__).resolve().parent.parent)
+        henv = {**os.environ, "MESH_ROOT": str(scratch), "PYTHONPATH": pkg_parent}
+        r0 = subprocess.run([sys.executable, "-m", "mesh", "init"], cwd=scratch, env=henv, capture_output=True, text=True)
+        if r0.returncode != 0:
+            raise MeshError("could not initialise scratch mesh project: " + r0.stderr[-300:])
+        core.git(scratch, "add", "-A"); core.git(scratch, "-c", "user.email=p@p", "-c", "user.name=probe", "commit", "-qm", "mesh")
+        from .db import DB as _DB, Paths as _Paths
+        sdb = _DB(_Paths(scratch))
+        core.register_session(sdb, a.client, "probe", None, os.getpid(), None, role="worker", session_id="w-probe")
+        bus.send(sdb, "human", "w-probe", "info", f"the magic word is {token}", None, 1, requires_ack=True)
+        sdb.close()
+        prompt = ("First run the shell command `ls` with your shell tool. Then create a file named hello.txt using your file tool. "
+                  "If any message from mesh (inside <mesh-messages> tags) appeared in your context, write its magic word into hello.txt; "
+                  "otherwise write the word none. Reply with the single word done.")
+    cmd, extra = ad.headless_cmd(prompt, None, None, None, cfg, str(out))
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "USER", "LANG", "TERM", "TMPDIR", "SHELL")}
+    if a.hooks:
+        env.update({"MESH_ROOT": str(scratch), "MESH_SESSION": "w-probe", "MESH_ROLE": "worker", "MESH_WORKER": "w-probe"})
     env.update({k: v for k, v in os.environ.items() if k.endswith("_API_KEY") or k.startswith(("COPILOT_", "CLAUDE_CODE_", "GITHUB_TOKEN", "FAKE_"))})
     env.update(extra)
     print(f"running in {scratch}:\n  " + " ".join(cmd[:3]) + " ... " + " ".join(cmd[4:]))
     r = subprocess.run(cmd, cwd=scratch, env=env, capture_output=True, text=True, timeout=600)
     (out / f"{a.client}.stream.jsonl").write_text(r.stdout); (out / f"{a.client}.stderr.log").write_text(r.stderr)
-    kinds = collections.Counter(); sess = None; usage_seen = None; cost = None; result = None
+    kinds = collections.Counter(); sess = None; usage_seen = None; cost = None; result = None; aiu_seen = None
     for line in r.stdout.splitlines():
         for e in streams.parse_line(a.client, line):
             kinds[e["kind"]] += 1
             sess = sess or e.get("session")
             if e["kind"] == "usage":
-                usage_seen = e
+                if e.get("input") is not None or e.get("output") is not None:
+                    usage_seen = e
+                if e.get("nano_aiu") is not None:
+                    aiu_seen = e["nano_aiu"] / 1e9
             if e["kind"] == "result":
                 result, cost = e, e.get("cost")
     otel = out / "otel.jsonl"
     otel_usage = streams.parse_otel_file(otel.read_text(errors="ignore")) if otel.exists() else None
     print(f"exit code: {r.returncode}   hello.txt created: {(scratch / 'hello.txt').exists()}")
     print(f"parsed event kinds: {dict(kinds)}")
-    print(f"native session id found: {sess or 'NO'}   usage in stream: {'yes' if usage_seen else 'NO'}   cost in stream: {cost if cost is not None else 'NO'}   "
+    print(f"native session id found: {sess or 'NO'}   token usage in stream: {'yes' if usage_seen else 'NO'}   cost in stream: {cost if cost is not None else 'NO'}   "
+          f"AI credits in stream: {('%.4f AIU' % aiu_seen) if aiu_seen is not None else 'NO'}   "
           f"result event: {'yes ok=' + str(result.get('ok')) if result else 'NO'}")
     if a.client == "copilot":
         print(f"OTel token usage: {otel_usage or 'NOT FOUND (file ' + ('exists' if otel.exists() else 'missing') + ')'}")
+    if a.hooks:
+        from .db import DB as _DB, Paths as _Paths
+        sdb = _DB(_Paths(scratch))
+        tool_ev = sdb.one("SELECT COUNT(*) FROM events WHERE type='tool' AND actor='w-probe'")[0]
+        sess_n = sdb.one("SELECT COUNT(*) FROM sessions")[0]
+        msg = sdb.one("SELECT delivered_at, delivery_state FROM messages WHERE recipient='w-probe'")
+        errlog = _Paths(scratch).logs / "hook-errors.log"
+        content = (scratch / "hello.txt").read_text() if (scratch / "hello.txt").exists() else ""
+        sdb.close()
+        print("--- hook verification (headless mode) ---")
+        print(f"hooks fired (tool events recorded by PostToolUse/pre_invocation hook): {'YES (%d)' % tool_ev if tool_ev else 'NO  -> hooks are NOT running in headless mode; workers would be unguarded'}")
+        print(f"mailbox message marked delivered by the hook: {'YES' if msg and msg['delivered_at'] else 'NO'}")
+        print(f"agent actually saw the injected message (token written to hello.txt): {'YES' if token in content else 'NO (hello.txt: %r)' % content[:60]}")
+        print(f"hook errors logged: {errlog.read_text()[-300:] if errlog.exists() else 'none'}")
     raw = kinds.get("other", 0)
     print(f"unparsed lines: {raw} (high numbers mean the parser does not match this CLI's real schema; send {out}/{a.client}.stream.jsonl to the maintainer)")
     print(f"raw output saved in {out}")

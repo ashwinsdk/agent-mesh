@@ -14,11 +14,11 @@ from .core import end_session, heartbeat, load_config, register_session
 from .db import DB, MeshError, Paths, find_root
 from .safety import check_command, check_path_write, scan_secrets
 
-EDIT_KEYS = ("file_path", "notebook_path", "path", "filePath", "TargetFile", "target_file", "AbsolutePath", "file", "filename")
+EDIT_KEYS = ("file_path", "notebook_path", "path", "filePath", "TargetFile", "target_file", "AbsolutePath", "Path", "file", "filename")
 CONTENT_KEYS = ("content", "new_string", "new_str", "file_text", "CodeContent", "ReplacementContent", "text")
 CMD_KEYS = ("command", "CommandLine", "cmd", "script")
 SHELL_TOOLS = re.compile(r"^(bash|shell|run_command|powershell|execute_bash|terminal)$", re.I)
-EDIT_TOOLS = re.compile(r"(edit|write|create|replace|patch|apply|multiedit|notebook)", re.I)
+EDIT_TOOLS = re.compile(r"(edit|write|create|replace|patch|apply|multiedit|notebook|sed_file)", re.I)
 
 
 def normalize(cli: str, event: str, p: dict) -> dict:

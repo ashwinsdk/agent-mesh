@@ -42,11 +42,18 @@ class Acc:
         self.ctx_size = None
         self.cost = None
         self.cost_base = 0.0
+        self.aiu = None  # AI credits (AIU), cumulative within the current attempt
+        self.aiu_base = 0.0
         self.model = None
         self.base = [0, 0, 0, 0]  # totals from earlier attempts
         self.cur_cum = None
 
     def add(self, e: dict):
+        if e.get("nano_aiu") is not None:
+            self.aiu = e["nano_aiu"] / 1e9
+            self.seen = True
+        if e.get("input") is None and e.get("output") is None and e.get("cache_read") is None:
+            return
         self.seen = True
         if e.get("model"):
             self.model = e["model"]
@@ -76,19 +83,24 @@ class Acc:
         c = self.cur_cum or (0, 0, 0, 0)
         return (self.base[0] + self.i + c[0], self.base[1] + self.o + c[1], self.base[2] + self.cr + c[2], self.base[3] + self.cc + c[3])
 
+    def aiu_total(self):
+        return None if self.aiu is None and not self.aiu_base else self.aiu_base + (self.aiu or 0)
+
     def cost_total(self):
         return None if self.cost is None and not self.cost_base else self.cost_base + (self.cost or 0)
 
     def next_attempt(self):
         self.cost_base = self.cost_total() or 0.0
         self.cost = None
+        self.aiu_base = self.aiu_total() or 0.0
+        self.aiu = None
         self.base = list(self.totals())
         self.i = self.o = self.cr = self.cc = 0
         self.cur_cum = None
 
 
 def write_usage(db: DB, cfg: dict, w, acc: Acc, run_cost_base: float) -> None:
-    if not acc.seen and acc.cost_total() is None:
+    if not acc.seen and acc.cost_total() is None and acc.aiu_total() is None:
         return
     i, o, cr, cc = acc.totals()
     mode = pricing.billing_mode(cfg, w["cli"])
@@ -99,7 +111,7 @@ def write_usage(db: DB, cfg: dict, w, acc: Acc, run_cost_base: float) -> None:
     usage.record(db, w["id"], w["cli"], "reported", task_id=w["task_id"], agent=w["agent"], model=acc.model or w["model"],
                  worker_id=w["id"], billing_mode=mode, cost_source="reported" if reported is not None else ("estimated" if est is not None else "unavailable"),
                  input_tokens=i, output_tokens=o, cache_read=cr, cache_create=cc, context_tokens=acc.ctx, context_size=size,
-                 context_pct=round(100 * acc.ctx / size, 1) if acc.ctx and size else None, cost_usd=cost)
+                 context_pct=round(100 * acc.ctx / size, 1) if acc.ctx and size else None, cost_usd=cost, ai_credits=acc.aiu_total())
 
 
 def run(worker_id: str) -> int:
@@ -223,8 +235,12 @@ def attempt(db: DB, cfg: dict, w, acc: Acc, child: dict, stop: dict) -> dict:
     otel = run_dir / "otel.jsonl"
     if w["cli"] == "copilot" and otel.exists():
         tot = streams.parse_otel_file(otel.read_text(errors="ignore"))
-        if tot:
-            acc.add({"kind": "usage", "scope": "cumulative", "input": tot["input"], "output": tot["output"]})
+        if tot:  # OTel is the authoritative token source for Copilot (the stream has none)
+            acc.add({"kind": "usage", "scope": "cumulative", "input": tot["input"], "output": tot["output"], "cache_read": tot["cache_read"],
+                     "nano_aiu": tot["nano_aiu"]})
+            if tot.get("session"):
+                with db.tx() as c:
+                    c.execute("UPDATE workers SET native_session=COALESCE(native_session,?) WHERE id=?", (tot["session"], w["id"]))
     write_usage(db, cfg, w, acc, run_cost_base)
     stream.close(); err.close()
     stderr_tail = (run_dir / "stderr.log").read_bytes()[-2000:].decode(errors="ignore")

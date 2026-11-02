@@ -204,9 +204,9 @@ class TestProbe(WorkerCase):
         self.scenario([{"write": "hello.txt", "content": "hi"}])
         res = r.mesh("probe", "claude")
         self.assertNotEqual(res.returncode, 0); self.assertIn("--yes", res.stdout)  # refuses without explicit confirmation
-        for cli, needles in (("claude", ("native session id found: fake-claude", "usage in stream: yes", "cost in stream: 0.01")),
-                             ("antigravity", ("native session id found: fake-antigravity", "usage in stream: yes", "cost in stream: NO")),
-                             ("copilot", ("native session id found: fake-copilot", "OTel token usage: {'input': 120, 'output': 30}"))):
+        for cli, needles in (("claude", ("native session id found: fake-claude", "token usage in stream: yes", "cost in stream: 0.01")),
+                             ("antigravity", ("native session id found: fake-antigravity", "token usage in stream: yes", "cost in stream: NO")),
+                             ("copilot", ("native session id found: fake-copilot", "token usage in stream: NO", "AI credits in stream: 0.5000 AIU", "OTel token usage: {'input': 120, 'output': 30"))):
             out = r.root / f"out-{cli}"
             res = r.mesh("probe", cli, "--yes", "--out", str(out))
             self.assertEqual(res.returncode, 0, res.stderr)
@@ -214,3 +214,20 @@ class TestProbe(WorkerCase):
                 self.assertIn(n, res.stdout, (cli, res.stdout))
             self.assertIn("hello.txt created: True", res.stdout)
             self.assertTrue((out / f"{cli}.stream.jsonl").exists())
+
+    def test_probe_hooks_mode_reports_honestly_when_hooks_do_not_fire(self):
+        r = self.repo(); os.environ["MESH_ROOT"] = str(r.root)
+        self.scenario([{"write": "hello.txt", "content": "none"}])
+        res = r.mesh("probe", "claude", "--yes", "--hooks", "--out", str(r.root / "o"))
+        self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+        self.assertIn("hooks fired", res.stdout); self.assertIn("NO  -> hooks are NOT running", res.stdout)  # the fake CLI runs no hooks
+        self.assertIn("agent actually saw the injected message (token written to hello.txt): NO", res.stdout)
+
+    def test_probe_hooks_mode_detects_working_hooks_and_injection_in_every_format(self):
+        r = self.repo(); os.environ["MESH_ROOT"] = str(r.root)
+        self.scenario([{"hook": "hello.txt"}])
+        for cli in ("claude", "copilot", "antigravity"):
+            res = r.mesh("probe", cli, "--yes", "--hooks", "--out", str(r.root / f"o-{cli}"))
+            self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+            self.assertIn("mailbox message marked delivered by the hook: YES", res.stdout, (cli, res.stdout))
+            self.assertIn("agent actually saw the injected message (token written to hello.txt): YES", res.stdout, (cli, res.stdout))

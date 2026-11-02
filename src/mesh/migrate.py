@@ -37,7 +37,7 @@ def _cols(conn, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def migrate(conn, target: int = 2) -> None:
+def migrate(conn, target: int = 3) -> None:
     cur = int((conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() or ["1"])[0])
     if cur >= target:
         return
@@ -54,6 +54,11 @@ def migrate(conn, target: int = 2) -> None:
                         conn.execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
             conn.execute("CREATE INDEX IF NOT EXISTS msg_pending ON messages(requires_ack, acked, delivery_state)")
             conn.execute("UPDATE meta SET value='2' WHERE key='schema_version'")
+        if cur < 3:
+            # Copilot reports usage in nano-AIU (its billing unit). Stored as AIU, never converted to currency.
+            if "ai_credits" not in _cols(conn, "usage"):
+                conn.execute("ALTER TABLE usage ADD COLUMN ai_credits REAL")
+            conn.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

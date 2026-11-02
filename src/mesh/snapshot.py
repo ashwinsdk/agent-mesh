@@ -33,7 +33,7 @@ def _series(c):
 
 def _agg(rows, key):
     out = defaultdict(lambda: {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0, "series": 0, "tokens_known": 0,
-                               "api_spend": 0.0, "informational_api_equiv": 0.0, "unclassified_cost": 0.0, "cost_sources": set()})
+                               "api_spend": 0.0, "informational_api_equiv": 0.0, "unclassified_cost": 0.0, "cost_sources": set(), "ai_credits": None})
     for r in rows:
         k = key(r) or "unknown"
         a = out[k]
@@ -44,6 +44,8 @@ def _agg(rows, key):
         a["output"] += r["output_tokens"] or 0
         a["cache_read"] += r["cache_read"] or 0
         a["cache_create"] += r["cache_create"] or 0
+        if r.get("ai_credits") is not None:
+            a["ai_credits"] = (a["ai_credits"] or 0.0) + r["ai_credits"]
         if r["cost_usd"] is not None:
             mode = r.get("billing_mode") or "unknown"
             a["cost_sources"].add(r.get("cost_source") or r["source"])
@@ -146,7 +148,7 @@ def build(paths: Paths) -> dict:
         per_sess = _agg(series, lambda r: r["worker_id"] or r["session_id"])
         glob = _agg(series, lambda r: "all").get("all") or {"input": 0, "output": 0, "cache_read": 0, "cache_create": 0, "total": 0, "series": 0,
                                                               "tokens_known": 0, "tokens_known_fraction": "0/0", "api_spend": 0.0,
-                                                              "informational_api_equiv": 0.0, "unclassified_cost": 0.0, "cost_sources": []}
+                                                              "informational_api_equiv": 0.0, "unclassified_cost": 0.0, "cost_sources": [], "ai_credits": None}
         completed = counts.get("COMPLETED", 0)
         spend = glob.get("api_spend", 0.0) if glob else 0.0
         quota = _rows(c, "SELECT * FROM usage WHERE five_hour_pct IS NOT NULL ORDER BY ts DESC LIMIT 1")
@@ -254,6 +256,8 @@ def render_report(s: dict) -> str:
              f"total in/out: {_n(g.get('input'))}/{_n(g.get('output'))}  cache read: {_n(g.get('cache_read'))}   series with token data: {g.get('tokens_known_fraction', 'n/a')}"]
     for k, a in sorted(u["per_cli"].items()):
         lines.append(f"  {k:12} in/out {_n(a['input'])}/{_n(a['output'])}  api spend ${a['api_spend']:.4f}  informational api-equiv ${a['informational_api_equiv']:.4f}  tokens from {a['tokens_known_fraction']} series")
+    if g.get("ai_credits") is not None:
+        lines.append(f"Copilot AI credits used (provider unit AIU, reported): {g['ai_credits']:.4f}")
     lines.append(f"API spend (billing_mode=api only): ${g.get('api_spend', 0):.4f}   avg per completed task: "
                  + (f"${u['avg_api_cost_per_completed_task']:.4f}" if u["avg_api_cost_per_completed_task"] else "n/a"))
     lines += ["", "## Tasks"] + [f"  {x['id']} [{x['status']}] {x['title']}" + (f" verified={x['verified']}" if x["verified"] is not None else "") for x in t["list"] if x["kind"] not in LEAF_SKIP]

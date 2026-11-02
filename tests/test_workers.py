@@ -156,6 +156,7 @@ class TestRecovery(WorkerCase):
         # Copilot tokens come from the OTel export, labelled as such (reported tokens, no cost)
         u = usage.latest(db, w["id"])
         self.assertEqual((u["input_tokens"], u["output_tokens"]), (120, 30)); self.assertIsNone(u["cost_usd"])
+        self.assertAlmostEqual(u["ai_credits"], 0.5)  # Copilot meters AI credits (AIU), never dollars
 
     def test_limit_without_fallback_fails_and_releases_task(self):
         r = self.proj(); db = r.db()
