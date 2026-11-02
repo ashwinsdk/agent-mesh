@@ -9,7 +9,7 @@ import time
 import traceback
 from pathlib import Path
 
-from . import bus, checkpoint, context, locks, tasks, usage
+from . import bus, checkpoint, context, eventlog, locks, tasks, usage
 from .core import end_session, heartbeat, load_config, register_session
 from .db import DB, MeshError, Paths, find_root
 from .safety import check_command, check_path_write, scan_secrets
@@ -70,6 +70,12 @@ def _out(cli: str, kind: str, text: str = "", deny: str | None = None) -> tuple[
         if cli == "copilot":
             return json.dumps({"permissionDecision": "deny", "permissionDecisionReason": deny}), 0
         return json.dumps({"decision": "deny", "reason": deny}), 0
+    if kind == "post_context" and text:
+        if cli == "claude":
+            return json.dumps({"hookSpecificOutput": {"hookEventName": "PostToolUse", "additionalContext": text}}), 0
+        if cli == "copilot":
+            return json.dumps({"additionalContext": text}), 0
+        return json.dumps({"injectSteps": [{"systemMessage": {"systemMessage": text}}]}), 0
     if kind == "context" and text:
         if cli == "claude":
             return json.dumps({"hookSpecificOutput": {"hookEventName": "SessionStart", "additionalContext": text}}), 0
@@ -104,8 +110,14 @@ def handle(cli: str, event: str, payload: dict, root: Path | None = None) -> tup
             return "", 0
         if event == "pre_tool":
             return _pre_tool(db, cli, sid, n, cfg)
-        if event == "post_tool":
-            db.event(sid, "tool", None, {"tool": n["tool"]})
+        if event in ("post_tool", "pre_invocation"):
+            if event == "post_tool":
+                db.event(sid, "tool", None, {"tool": n["tool"]})
+            if cli == "antigravity" and event == "post_tool":
+                return "", 0  # Antigravity can only inject at PreInvocation; consuming the mailbox here would lose messages
+            txt = digest(db, sid)
+            if txt:
+                return _out(cli, "post_context", txt)
             return "", 0
         if event == "pre_compact":
             row = db.one("SELECT task_id FROM sessions WHERE id=?", (sid,))
@@ -124,6 +136,30 @@ def handle(cli: str, event: str, payload: dict, root: Path | None = None) -> tup
         return "", 0
     finally:
         db.close()
+
+
+def digest(db: DB, sid: str, max_msgs: int = 5) -> str:
+    """Mailbox + (for the orchestrator) event digest, injected at the agent's next tool/invocation boundary.
+    Messages are injected once (delivered_at); unacked ones stay in `mesh msg inbox` and are retried by bus.sweep."""
+    parts = []
+    rows = db.q("SELECT m.* FROM messages m WHERE m.delivered_at IS NULL AND m.delivery_state!='failed' AND m.recipient IN (%s) ORDER BY m.priority, m.ts LIMIT ?"
+                % ",".join("?" * len(bus._targets(db, sid))), (*bus._targets(db, sid), max_msgs))
+    rows = [r for r in rows if sid not in json.loads(r["ack_by"] or "[]") and r["sender"] != sid and r["recipient"] != "*"]
+    if rows:
+        parts.append(bus.render_untrusted(rows))
+        parts.append("[mesh] Reply with `mesh msg reply <id> \"...\"`; acknowledge with `mesh msg ack <id>`.")
+        bus.mark_delivered(db, [r["id"] for r in rows])
+    s = db.one("SELECT role FROM sessions WHERE id=?", (sid,))
+    if s and s["role"] == "orchestrator":
+        cur = eventlog.get_cursor(db, f"inject:{sid}")
+        top = eventlog.max_seq(db)
+        if top > cur:
+            ev = eventlog.since(db, cur, limit=10, targets=eventlog._targets(db, "orchestrator", sid), own=sid)
+            eventlog.set_cursor(db, f"inject:{sid}", top)
+            if ev:
+                parts.append(bus.fmt_event_digest(eventlog.render(db, ev)))
+                parts.append("[mesh] Handle these: `mesh wait --consumer orchestrator` to continue supervising.")
+    return "\n".join(parts)
 
 
 def _session_start(db: DB, cli: str, sid: str, n: dict, cfg: dict) -> tuple[str, int]:

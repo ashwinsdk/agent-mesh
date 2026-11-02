@@ -93,7 +93,9 @@ def resolve_actor(db: DB, explicit: str | None = None) -> str:
     for var in ("MESH_SESSION", "MESH_ACTOR"):
         if os.environ.get(var):
             return os.environ[var]
-    rows = db.q("SELECT id FROM sessions WHERE status='active' ORDER BY last_seen DESC")
+    # Only unlabelled interactive sessions can be "me"; worker/orchestrator sessions always announce themselves via MESH_SESSION,
+    # so a human typing `mesh approve` can never be mistaken for the only running worker.
+    rows = db.q("SELECT id FROM sessions WHERE status='active' AND role IS NULL ORDER BY last_seen DESC")
     if len(rows) == 1:
         return rows[0]["id"]
     return "human"

@@ -287,6 +287,7 @@ class Antigravity(Adapter):
             "SessionStart": [h("session_start")],
             "PreToolUse": [{"matcher": ".*", "hooks": [h("pre_tool")]}],
             "PostToolUse": [{"matcher": ".*", "hooks": [h("post_tool")]}],
+            "PreInvocation": [h("pre_invocation")],
             "Stop": [h("stop")],
         }
         atomic_write(p, json.dumps(cur, indent=2) + "\n")
