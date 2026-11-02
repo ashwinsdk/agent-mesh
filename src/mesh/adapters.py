@@ -9,7 +9,7 @@ import re
 import shutil
 from pathlib import Path
 
-from .db import Paths, atomic_write, sha256
+from .db import MeshError, Paths, atomic_write, sha256
 from .registry import load_agents
 
 CORE = """\
@@ -271,6 +271,10 @@ def vendor_lib(paths: Paths) -> str:
     """Copy the mesh package into .mesh/lib so the repo is self-contained and portable."""
     src = Path(__file__).parent
     dst = paths.mesh / "lib" / "mesh"
+    if src.resolve() == dst.resolve():
+        raise MeshError("this is already the project's vendored copy, so there is nothing newer to copy. "
+                        "Run the globally installed tool instead: `mesh upgrade` (not `.mesh/bin/mesh upgrade`). "
+                        "Update the global tool first with `pipx install --force git+https://github.com/ashwinsdk/agent-mesh.git`.")
     dst.mkdir(parents=True, exist_ok=True)
     for f in src.glob("*.py"):
         shutil.copy2(f, dst / f.name)

@@ -299,6 +299,15 @@ class TestPortability(MeshCase):
                 res = sh("sh", "-c", cmd, cwd=empty, input=payload, env=env)
                 self.assertEqual((res.returncode, res.stdout), (0, ""))
 
+    def test_upgrade_from_vendored_copy_errors_cleanly_and_global_upgrade_refreshes(self):
+        r = self.repo(init=False); r.mesh("init")
+        env = {k: v for k, v in os.environ.items() if k != "PYTHONPATH"}
+        res = sh(str(r.root / ".mesh/bin/mesh"), "upgrade", cwd=r.root, env=env)
+        self.assertEqual(res.returncode, 1); self.assertNotIn("Traceback", res.stderr); self.assertIn("globally installed", res.stderr)
+        (r.root / ".mesh/lib/mesh/cli.py").write_text("# stale\n")
+        self.assertEqual(r.mesh("upgrade").returncode, 0)  # run from source tree = the "global" install
+        self.assertNotIn("# stale", (r.root / ".mesh/lib/mesh/cli.py").read_text())
+
     def test_generated_configs_are_valid_and_scoped(self):
         r = self.repo(init=False); r.mesh("init")
         c = json.loads((r.root / ".claude/settings.json").read_text())
