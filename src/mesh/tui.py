@@ -33,13 +33,13 @@ def _num(v):
     return "n/a" if v is None else (f"{v / 1000:.1f}k" if v >= 1000 else str(int(v)))
 
 
-def snapshot(paths: Paths, width: int = 110) -> list[tuple[str, str]]:
+def snapshot(paths: Paths, width: int = 160) -> list[tuple[str, str]]:
     """Return [(text, style)] with style in head|ok|warn|bad|dim|"". """
     c = _ro(paths)
     L: list[tuple[str, str]] = []
     add = lambda t="", s="": L.append((t[:width], s))
     st = {r[0]: r[1] for r in c.execute("SELECT status, COUNT(*) FROM tasks WHERE kind!='project' GROUP BY status")}
-    add(f" agent-mesh  {time.strftime('%H:%M:%S')}   tasks: " + "  ".join(f"{k}={v}" for k, v in sorted(st.items())) or "no tasks", "head")
+    add(f" agent-mesh  {time.strftime('%H:%M:%S')}   tasks: " + ("  ".join(f"{k}={v}" for k, v in sorted(st.items())) or "none"), "head")
     add()
     add(" SESSIONS  (usage source: R=reported E=estimated -=unavailable)", "head")
     add(f" {'session':<24}{'cli':<13}{'agent':<14}{'task':<12}{'seen':>5}  {'context':<20}{'tokens in/out':>16}  src  model", "dim")
