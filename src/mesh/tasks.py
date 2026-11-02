@@ -29,7 +29,7 @@ HELD = ("ASSIGNED", "IN_PROGRESS", "REVIEW", "NEEDS_REWORK", "PAUSED", "BLOCKED"
 def create(db: DB, title: str, description: str = "", parent: str | None = None, kind: str | None = None,
            priority: int = 2, deps: list[str] | None = None, files: list[str] | None = None,
            acceptance: str = "", agent: str | None = None, backlog: bool = False, actor: str = "human",
-           task_id: str | None = None) -> str:
+           task_id: str | None = None, verify_cmd: str = "", risk: str = "low", review_required: bool = False) -> str:
     deps = deps or []
     with db.tx() as c:
         if parent:
@@ -50,9 +50,12 @@ def create(db: DB, title: str, description: str = "", parent: str | None = None,
             raise MeshError(f"task {tid} exists")
         status = "BACKLOG" if (backlog or deps) else "READY"
         t = now()
-        c.execute("INSERT INTO tasks(id,parent_id,kind,title,description,priority,status,agent,files,acceptance,created,last_activity)"
-                  " VALUES(?,?,?,?,?,?,?,?,?,?,?,?)",
-                  (tid, parent, kind, title, description, priority, status, agent, json.dumps(files or []), acceptance, t, t))
+        if risk not in ("low", "high"):
+            raise MeshError("risk must be low|high")
+        c.execute("INSERT INTO tasks(id,parent_id,kind,title,description,priority,status,agent,files,acceptance,created,last_activity,"
+                  "verify_cmd,risk,review_required) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+                  (tid, parent, kind, title, description, priority, status, agent, json.dumps(files or []), acceptance, t, t,
+                   verify_cmd, risk, 1 if (review_required or risk == "high") else 0))
         for d in deps:
             if _would_cycle(c, tid, d):
                 raise MeshError("dependency cycle")

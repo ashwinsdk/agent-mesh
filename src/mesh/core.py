@@ -16,7 +16,14 @@ DEFAULT_CONFIG = {
     "locks": {"ttl_seconds": 900},
     "tasks": {"stale_after_seconds": 1800},
     "context": {"warn_pct": 70, "checkpoint_pct": 85, "brief_budget_chars": 6000},
-    "policy": {"destructive": "deny", "secret_in_write": "deny", "protect_mesh_files": True},
+    "policy": {"destructive": "deny", "secret_in_write": "deny", "protect_mesh_files": True, "review_paths": []},
+    "autonomy": {"mode": "worktree-confined", "accepted_by": "", "accepted_at": "", "accepted_cli_flags": "", "plan_approval": True},
+    "workers": {"max_workers": 6, "max_depth": 2, "max_restarts": 2, "stall_seconds": 600, "worker_timeout_seconds": 3600,
+                "max_total_cost_usd": 0, "max_budget_usd_per_worker": 0, "max_ai_credits_per_worker": 0,
+                "require_committed_config": True, "default_route": ["claude", "copilot", "antigravity"], "route": {},
+                "env_passthrough": ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
+                                    "COPILOT_*", "CLAUDE_CODE_*", "FAKE_*", "MESH_BIN_*", "PYTHONPATH"]},
+    "billing": {"claude": "unknown", "copilot": "unknown", "antigravity": "unknown"},
 }
 
 
@@ -35,9 +42,10 @@ def load_config(paths: Paths) -> dict:
 # ---------------------------------------------------------------- sessions
 
 def register_session(db: DB, cli: str, agent: str | None = None, native_id: str | None = None,
-                     pid: int | None = None, model: str | None = None) -> str:
+                     pid: int | None = None, model: str | None = None, role: str | None = None,
+                     session_id: str | None = None, worker_id: str | None = None) -> str:
     """Idempotent: the same (cli, native_id) always maps to the same mesh session id."""
-    sid = f"{cli}-{native_id[:8]}" if native_id else f"{cli}-{os.urandom(4).hex()}"
+    sid = session_id or (f"{cli}-{native_id[:8]}" if native_id else f"{cli}-{os.urandom(4).hex()}")
     t = now()
     with db.tx() as c:
         row = c.execute("SELECT id FROM sessions WHERE id=?", (sid,)).fetchone()
@@ -46,10 +54,23 @@ def register_session(db: DB, cli: str, agent: str | None = None, native_id: str 
                       "model=COALESCE(?,model), pid=COALESCE(?,pid) WHERE id=?", (t, agent, model, pid, sid))
             db.event(sid, "session.resume", None, {"cli": cli}, conn=c)
         else:
-            c.execute("INSERT INTO sessions(id,cli,agent,native_id,pid,host,model,started,last_seen) VALUES(?,?,?,?,?,?,?,?,?)",
-                      (sid, cli, agent, native_id, pid, socket.gethostname(), model, t, t))
+            c.execute("INSERT INTO sessions(id,cli,agent,native_id,pid,host,model,started,last_seen,role,worker_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
+                      (sid, cli, agent, native_id, pid, socket.gethostname(), model, t, t, role, worker_id))
             db.event(sid, "session.start", None, {"cli": cli, "agent": agent}, conn=c)
     return sid
+
+
+def set_toml_section(path, section: str, values: dict) -> None:
+    """Replace or append one flat [section] in a TOML file (keeps everything else byte-for-byte)."""
+    import re as _re
+    def fmt(v):
+        return "true" if v is True else "false" if v is False else f'"{v}"' if isinstance(v, str) else str(v)
+    body = f"[{section}]\n" + "".join(f"{k} = {fmt(v)}\n" for k, v in values.items())
+    text = path.read_text() if path.exists() else ""
+    rx = _re.compile(rf"^\[{_re.escape(section)}\]\n(?:(?!\[).*\n?)*", _re.M)
+    new = rx.sub(body, text, count=1) if rx.search(text) else text.rstrip("\n") + "\n\n" + body
+    from .db import atomic_write
+    atomic_write(path, new)
 
 
 def heartbeat(db: DB, sid: str) -> None:

@@ -11,7 +11,7 @@ import time
 import uuid
 from pathlib import Path
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS meta(key TEXT PRIMARY KEY, value TEXT);
@@ -120,7 +120,9 @@ class DB:
         self.conn.execute("PRAGMA synchronous=NORMAL")
         self.conn.execute(f"PRAGMA busy_timeout={busy_ms}")
         self.conn.executescript(SCHEMA)
-        self.conn.execute("INSERT OR IGNORE INTO meta VALUES('schema_version', ?)", (str(SCHEMA_VERSION),))
+        self.conn.execute("INSERT OR IGNORE INTO meta VALUES('schema_version', '1')")
+        from .migrate import migrate
+        migrate(self.conn, SCHEMA_VERSION)
 
     @contextlib.contextmanager
     def tx(self):

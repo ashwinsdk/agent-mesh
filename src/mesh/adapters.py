@@ -5,8 +5,11 @@ Each adapter declares capabilities honestly: native | adapter | external | estim
 from __future__ import annotations
 
 import json
+import os
 import re
 import shutil
+from pathlib import Path
+
 from pathlib import Path
 
 from .db import MeshError, Paths, atomic_write, sha256
@@ -101,8 +104,20 @@ class Adapter:
     def __init__(self, paths: Paths):
         self.p = paths
 
+    supports_resume = False
+
+    def bin(self) -> str | None:
+        """Executable to run; tests/users can override with MESH_BIN_<NAME> (e.g. a fake CLI)."""
+        return os.environ.get(f"MESH_BIN_{self.name.upper()}") or self.binary
+
     def available(self) -> str | None:
-        return shutil.which(self.binary) if self.binary else None
+        b = self.bin()
+        return shutil.which(b) if b else None
+
+    def headless_cmd(self, prompt: str, model: str | None, resume_id: str | None, agent: str | None, cfg: dict,
+                     run_dir: str | None = None) -> tuple[list[str], dict]:
+        """(argv, extra_env) to run one non-interactive worker turn. Implemented per client."""
+        raise NotImplementedError
 
     def sync(self) -> list[str]:
         return []
@@ -179,8 +194,24 @@ class Claude(Adapter):
         atomic_write(p, json.dumps(cur, indent=2) + "\n")
         return "merged mesh hooks" + note
 
+    supports_resume = True
+
     def launch_cmd(self, prompt):
-        return ["claude", prompt]
+        return [self.bin(), prompt]
+
+    def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
+        cmd = [self.bin(), "-p", prompt, "--output-format", "stream-json", "--verbose",
+               "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Edit,Write,MultiEdit,Glob,Grep"]
+        if model:
+            cmd += ["--model", model]
+        if resume_id:
+            cmd += ["--resume", resume_id]
+        if agent and (self.p.root / ".claude" / "agents" / f"mesh-{agent}.md").exists():
+            cmd += ["--agent", f"mesh-{agent}"]
+        b = cfg["workers"].get("max_budget_usd_per_worker") or 0
+        if b:
+            cmd += ["--max-budget-usd", str(b)]
+        return cmd, {}
 
 
 class Copilot(Adapter):
@@ -216,7 +247,20 @@ class Copilot(Adapter):
         return out
 
     def launch_cmd(self, prompt):
-        return ["copilot", "-i", prompt]
+        return [self.bin(), "-i", prompt]
+
+    def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
+        # `-p` requires --allow-all-tools; path/url confinement stays on (no --allow-all-paths/urls), mesh hooks are the guard.
+        cmd = [self.bin(), "-p", prompt, "--output-format", "json", "--allow-all-tools"]
+        if model:
+            cmd += ["--model", model]
+        if agent and (self.p.root / ".github" / "agents" / f"mesh-{agent}.agent.md").exists():
+            cmd += ["--agent", f"mesh-{agent}"]
+        c = cfg["workers"].get("max_ai_credits_per_worker") or 0
+        if c:
+            cmd += ["--max-ai-credits", str(max(30, int(c)))]  # documented minimum is 30
+        env = {"COPILOT_OTEL_FILE_EXPORTER_PATH": str(Path(run_dir) / "otel.jsonl")} if run_dir else {}
+        return cmd, env
 
 
 class Antigravity(Adapter):
@@ -249,8 +293,19 @@ class Antigravity(Adapter):
         out.append(".agents/hooks.json: merged key 'mesh'")
         return out
 
+    supports_resume = True
+
     def launch_cmd(self, prompt):
-        return ["agy", "-i", prompt]
+        return [self.bin(), "-i", prompt]
+
+    def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
+        cmd = [self.bin(), "-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions",
+               "--print-timeout", f"{int(cfg['workers']['worker_timeout_seconds'])}s"]
+        if model:
+            cmd += ["--model", model]
+        if resume_id:
+            cmd += ["--conversation", resume_id]
+        return cmd, {}
 
 
 ADAPTERS = {"claude": Claude, "copilot": Copilot, "antigravity": Antigravity, "generic": Generic}

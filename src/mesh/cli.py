@@ -11,7 +11,7 @@ import sys
 import time
 from pathlib import Path
 
-from . import adapters, bus, checkpoint, context, core, gitflow, hooks, locks, memory, registry, tasks, tui, usage
+from . import adapters, bus, checkpoint, cli2, context, core, gitflow, hooks, locks, memory, registry, tasks, tui, usage
 from .db import DB, MeshError, Paths, atomic_write, find_root, now, sha256
 
 DEFAULT_TOML = """# mesh configuration (committed). Edit freely.
@@ -88,9 +88,12 @@ def build_parser():
     x.add_argument("--parent"); x.add_argument("--kind"); x.add_argument("-p", "--priority", type=int, default=2)
     x.add_argument("--dep", action="append", default=[]); x.add_argument("--files", default="", help="comma-separated paths/globs")
     x.add_argument("--accept", default=""); x.add_argument("--agent"); x.add_argument("--backlog", action="store_true"); x.add_argument("--id")
+    x.add_argument("--verify", default="", help="shell command that proves the task is done"); x.add_argument("--risk", default="low", choices=["low", "high"])
     x = ts.add_parser("list"); x.add_argument("--status"); x.add_argument("--all", action="store_true")
     for n in ("show", "start", "review", "complete", "release", "resume", "pause", "cancel", "tree"):
         x = ts.add_parser(n); x.add_argument("id", nargs="?")
+    x = ts.add_parser("submit", help="worker: submit finished work for review (cannot complete a task)"); x.add_argument("id"); x.add_argument("--note", default="")
+    x = ts.add_parser("dep"); x.add_argument("id"); x.add_argument("on")
     x = ts.add_parser("ready"); x.add_argument("--agent")
     x = ts.add_parser("claim"); x.add_argument("id"); x.add_argument("--agent"); x.add_argument("--cli")
     for n in ("block", "fail", "rework"):
@@ -154,6 +157,7 @@ def build_parser():
     x = sub.add_parser("gc"); x.add_argument("--keep-days", type=int, default=30)
     x = sub.add_parser("run", help="launch a CLI inside a mesh session (fallback for CLIs lacking SessionEnd)")
     x.add_argument("client"); x.add_argument("--task"); x.add_argument("--agent"); x.add_argument("--prompt", default="")
+    cli2.add_parsers(sub)
     return ap
 
 
@@ -201,7 +205,8 @@ def dispatch(a) -> int:
     db = DB(paths)
     try:
         actor = core.resolve_actor(db, a.actor)
-        return globals()[f"cmd_{c}"](db, a, actor)
+        fn = globals().get(f"cmd_{c}") or cli2.HANDLERS[c.replace("-", "_")]
+        return fn(db, a, actor)
     finally:
         db.close()
 
@@ -321,7 +326,8 @@ def cmd_task(db, a, actor):
     cfg = core.load_config(db.paths)
     if s == "create":
         tid = tasks.create(db, a.title, a.description, a.parent, a.kind, a.priority, a.dep,
-                           [f for f in a.files.split(",") if f], a.accept, a.agent, a.backlog, actor, a.id)
+                           [f for f in a.files.split(",") if f], a.accept, a.agent, a.backlog, actor, a.id,
+                           verify_cmd=a.verify, risk=a.risk)
         print(tid)
     elif s == "list":
         q = "SELECT * FROM tasks WHERE kind!='project'" + ("" if a.all else " AND status NOT IN ('COMPLETED','CANCELLED')")
@@ -338,11 +344,18 @@ def cmd_task(db, a, actor):
     elif s == "claim":
         t = tasks.claim(db, a.id, actor, a.agent, a.cli or (db.one("SELECT cli FROM sessions WHERE id=?", (actor,)) or [None])[0], cfg["locks"]["ttl_seconds"])
         print(f"claimed {t['id']} as {actor}; locks acquired on {t['files']}")
+    elif s == "submit":
+        from . import verify
+        print(verify.submit(db, a.id, actor, a.note))
+    elif s == "dep":
+        tasks.add_dep(db, a.id, a.on)
     elif s == "start":
         tasks.transition(db, a.id, "IN_PROGRESS", actor)
     elif s == "review":
-        tasks.transition(db, a.id, "REVIEW", actor)
+        from . import verify
+        print(verify.submit(db, a.id, actor, ""))
     elif s == "complete":
+        cli2.require_privileged(db, actor)
         tasks.transition(db, a.id, "COMPLETED", actor)
     elif s == "release":
         tasks.transition(db, a.id, "READY", actor)
@@ -493,12 +506,14 @@ def cmd_worktree(db, a, actor):
 
 
 def cmd_integrate(db, a, actor):
+    cli2.require_privileged(db, actor)
     r = gitflow.integrate(db, a.task, actor)
     print(("OK: " if r["ok"] else f"FAILED at {r['stage']}: ") + r["detail"])
     return 0 if r["ok"] else 4
 
 
 def cmd_promote(db, a, actor):
+    cli2.require_privileged(db, actor)
     print(gitflow.promote(db))
     return 0
 

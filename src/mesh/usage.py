@@ -11,11 +11,13 @@ SOURCES = ("reported", "estimated", "unavailable")
 
 
 def record(db: DB, session: str | None, cli: str, source: str, task_id: str | None = None, agent: str | None = None,
-           model: str | None = None, **m) -> None:
+           model: str | None = None, worker_id: str | None = None, billing_mode: str | None = None,
+           cost_source: str | None = None, turn: int | None = None, **m) -> None:
     assert source in SOURCES
     keys = ["input_tokens", "output_tokens", "cache_read", "cache_create", "context_tokens", "context_size",
             "context_pct", "cost_usd", "five_hour_pct", "five_hour_reset", "seven_day_pct", "seven_day_reset",
-            "tool_calls", "requests"]
+            "tool_calls", "requests", "worker_id", "billing_mode", "cost_source", "turn"]
+    m = {**m, "worker_id": worker_id, "billing_mode": billing_mode, "cost_source": cost_source, "turn": turn}
     vals = [m.get(k) for k in keys]
     with db.tx() as c:
         c.execute(f"INSERT INTO usage(ts,session_id,task_id,agent,cli,model,source,{','.join(keys)}) VALUES(?,?,?,?,?,?,?,{','.join('?' * len(keys))})",
@@ -49,6 +51,11 @@ def estimate_from_file(path: str | None, context_size: int = 200_000) -> dict | 
         return None
     toks = size // 4
     return dict(context_tokens=toks, context_size=context_size, context_pct=round(min(100.0, 100 * toks / context_size), 1))
+
+
+def latest_series(db: DB):
+    """Latest cumulative usage row per (worker, cli): the correct unit for aggregation (a worker can span CLIs after fallback)."""
+    return db.q("SELECT * FROM usage u WHERE worker_id IS NOT NULL AND id=(SELECT MAX(id) FROM usage WHERE worker_id=u.worker_id AND cli=u.cli)")
 
 
 def latest(db: DB, session: str):
