@@ -61,6 +61,13 @@ def add_parsers(sub):
     x.add_argument("--resume", action="store_true"); x.add_argument("--accept-autonomy", action="store_true")
     x.add_argument("--dry-run", action="store_true")
     sub.add_parser("report")
+    x = sub.add_parser("conduct", help="run the conductor (single instance per project)"); x.add_argument("--daemon", action="store_true")
+    x.add_argument("--status", action="store_true"); x.add_argument("--stop", action="store_true")
+    x = sub.add_parser("start", help="headless: submit a project prompt to the conductor"); x.add_argument("prompt")
+    x.add_argument("--cli"); x.add_argument("--yes", action="store_true", help="accept the autonomy policy non-interactively")
+    x.add_argument("--wait", action="store_true", help="block until the run reaches a terminal state or needs you")
+    sub.add_parser("status", help="plain-text project status")
+    x = sub.add_parser("ctl", help="send a command to the conductor (scripting)"); x.add_argument("kind"); x.add_argument("payload", nargs="?", default="{}")
     x = sub.add_parser("probe", help="run ONE tiny headless turn in a real CLI and report how well mesh's stream parser understood it")
     x.add_argument("client", choices=["claude", "copilot", "antigravity"]); x.add_argument("--out", default="probe-output")
     x.add_argument("--yes", action="store_true", help="confirm: this runs the real CLI with tool approvals pre-granted")
@@ -356,6 +363,77 @@ def cmd_report(db, a, actor):
     from . import snapshot
     snap = snapshot.build(db.paths)
     print(snapshot.render_report(snap))
+    return 0
+
+
+def cmd_conduct(db, a, actor):
+    from . import conductor
+    if a.status:
+        print(json.dumps(conductor.status(db.paths), indent=2, default=str)); return 0
+    if a.stop:
+        print("stopping" if conductor.stop_daemon(db.paths) else "no conductor running"); return 0
+    if a.daemon:
+        print(f"conductor pid {conductor.start_daemon(db.paths)}"); return 0
+    db.close()
+    return conductor.serve(db.paths)
+
+
+def cmd_start(db, a, actor):
+    from . import conductor, runs
+    cfg = load_config(db.paths)
+    if not cfg["autonomy"]["accepted_at"]:
+        cmd_autonomy(db, type("A", (), {"sub": "accept", "yes": a.yes})(), "human")
+    adapters.sync_all(db.paths, ["claude", "copilot", "antigravity"])
+    try:
+        workers.check_committed(db, load_config(db.paths))
+    except MeshError as e:
+        print(f"{e}\nCommitting mesh-generated files now.")
+        cmd_commit_config(db, a, actor)
+    conductor.start_daemon(db.paths)
+    cid = runs.enqueue(db, "submit_prompt", {"prompt": a.prompt, "cli": a.cli}, "human")
+    for _ in range(100):
+        r = db.one("SELECT * FROM commands WHERE id=?", (cid,))
+        if r["status"] != "pending":
+            print(("started: " if r["status"] == "done" else "error: ") + (r["result"] or ""))
+            if r["status"] != "done":
+                return 1
+            break
+        time.sleep(0.2)
+    else:
+        print("the conductor did not pick up the command (see .mesh/runtime/logs/conductor.log)"); return 1
+    while a.wait:
+        run = runs.latest_run(db)
+        open_items = runs.open_attention(db)
+        if run["status"] in runs.TERMINAL or run["status"] == "awaiting_approval" or open_items:
+            print(f"run {run['id']}: {run['status']}")
+            for i in open_items:
+                print(f"  needs you: [{i['kind']}] {i['title']}")
+            break
+        time.sleep(2)
+    return 0
+
+
+def cmd_status(db, a, actor):
+    from . import conductor, health, runs, snapshot
+    s = snapshot.build(db.paths)
+    st = conductor.status(db.paths)
+    run = runs.latest_run(db)
+    print(f"project {s['project']['name']}   conductor: {'running' if st['running'] else 'stopped'}   run: " +
+          (f"#{run['id']} {run['status']} — {run['prompt'][:70]}" if run else "none"))
+    print(snapshot.render_report(s))
+    for i in runs.open_attention(db):
+        print(f"NEEDS YOU [{i['kind']}] {i['title']}")
+    for lvl, txt in health.checks(db):
+        if lvl != "ok":
+            print(f"{lvl.upper()}: {txt}")
+    return 0
+
+
+def cmd_ctl(db, a, actor):
+    from . import conductor, runs
+    cid = runs.enqueue(db, a.kind, json.loads(a.payload), actor)
+    conductor.start_daemon(db.paths)
+    print(cid)
     return 0
 
 

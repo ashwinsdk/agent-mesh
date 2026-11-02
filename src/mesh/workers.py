@@ -146,6 +146,9 @@ def build_prompt(db: DB, w, feedback: str | None = None) -> str:
     up = verify.upstream_handoffs(db, t["id"])
     if up:
         base += f"\n\n## Completed upstream work you build on (already on branch mesh/integration)\n{up}\n"
+    hist = (t["notes"] or "").strip()
+    if hist:
+        base += f"\n\n## History of this task (earlier attempts, rejections, merge problems; do not repeat them)\n{hist[-900:]}\n"
     if feedback:
         base += f"\n\n## Feedback from the orchestrator (address this first)\n{feedback}\n"
     return base

@@ -109,6 +109,7 @@ def build_parser():
     s = sub.add_parser("msg"); ms = s.add_subparsers(dest="sub", required=True)
     x = ms.add_parser("send"); x.add_argument("content"); x.add_argument("--to", required=True); x.add_argument("--type", default="info")
     x.add_argument("--task"); x.add_argument("--priority", type=int, default=2); x.add_argument("--dedupe")
+    x.add_argument("--requires-ack", action="store_true"); x.add_argument("--ttl", type=float)
     x = ms.add_parser("inbox"); x.add_argument("--all", action="store_true")
     x = ms.add_parser("ack"); x.add_argument("id", nargs="+")
 
@@ -418,7 +419,7 @@ def cmd_lock(db, a, actor):
 
 def cmd_msg(db, a, actor):
     if a.sub == "send":
-        mid = bus.send(db, actor, a.to, a.type, a.content, a.task, a.priority, a.dedupe)
+        mid = bus.send(db, actor, a.to, a.type, a.content, a.task, a.priority, a.dedupe, requires_ack=a.requires_ack, ttl=a.ttl)
         print(mid or "duplicate (dedupe key exists); not sent")
     elif a.sub == "inbox":
         rows = bus.inbox(db, actor, a.all)

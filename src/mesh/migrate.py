@@ -22,6 +22,23 @@ CREATE TABLE IF NOT EXISTS approvals(
   payload TEXT, status TEXT NOT NULL DEFAULT 'pending', decided_by TEXT, ts REAL NOT NULL, decided REAL);
 """
 
+V4_TABLES = """
+CREATE TABLE IF NOT EXISTS runs(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, prompt TEXT NOT NULL, cli TEXT, status TEXT NOT NULL DEFAULT 'planning',
+  summary TEXT, plan_json TEXT, error TEXT, brain_session TEXT, brain_turns INTEGER DEFAULT 0, plan_attempts INTEGER DEFAULT 0,
+  created REAL NOT NULL, updated REAL NOT NULL, ended REAL, final_validation TEXT);
+CREATE TABLE IF NOT EXISTS commands(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, kind TEXT NOT NULL, payload TEXT DEFAULT '{}', actor TEXT,
+  status TEXT NOT NULL DEFAULT 'pending', result TEXT, done REAL);
+CREATE INDEX IF NOT EXISTS cmd_pending ON commands(status, id);
+CREATE TABLE IF NOT EXISTS attention(
+  id INTEGER PRIMARY KEY AUTOINCREMENT, ts REAL NOT NULL, run_id INTEGER, kind TEXT NOT NULL, subject TEXT,
+  title TEXT NOT NULL, detail TEXT, payload TEXT, status TEXT NOT NULL DEFAULT 'open', resolved_by TEXT, resolved REAL);
+CREATE INDEX IF NOT EXISTS att_open ON attention(status, kind, subject);
+CREATE TABLE IF NOT EXISTS conductor(
+  id INTEGER PRIMARY KEY CHECK (id=1), pid INTEGER, pid_start TEXT, started REAL, heartbeat REAL, state TEXT, run_id INTEGER, version TEXT)
+"""
+
 ADD_COLUMNS = {
     "sessions": [("role", "TEXT"), ("worker_id", "TEXT")],
     "tasks": [("verify_cmd", "TEXT DEFAULT ''"), ("risk", "TEXT DEFAULT 'low'"), ("review_required", "INTEGER DEFAULT 0"),
@@ -37,7 +54,7 @@ def _cols(conn, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def migrate(conn, target: int = 3) -> None:
+def migrate(conn, target: int = 4) -> None:
     cur = int((conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() or ["1"])[0])
     if cur >= target:
         return
@@ -59,6 +76,13 @@ def migrate(conn, target: int = 3) -> None:
             if "ai_credits" not in _cols(conn, "usage"):
                 conn.execute("ALTER TABLE usage ADD COLUMN ai_credits REAL")
             conn.execute("UPDATE meta SET value='3' WHERE key='schema_version'")
+        if cur < 4:
+            for stmt in [x.strip() for x in V4_TABLES.split(";") if x.strip()]:
+                conn.execute(stmt)
+            for col, ddl in (("run_id", "INTEGER"), ("prefer_cli", "TEXT")):
+                if col not in _cols(conn, "tasks"):
+                    conn.execute(f"ALTER TABLE tasks ADD COLUMN {col} {ddl}")
+            conn.execute("UPDATE meta SET value='4' WHERE key='schema_version'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

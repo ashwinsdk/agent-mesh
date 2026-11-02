@@ -119,6 +119,10 @@ class Adapter:
         """(argv, extra_env) to run one non-interactive worker turn. Implemented per client."""
         raise NotImplementedError
 
+    def json_cmd(self, prompt: str, schema: dict, resume_id: str | None, cfg: dict, run_dir: str | None = None) -> tuple[list[str], dict]:
+        """(argv, extra_env) for a read-only structured-output turn (planner / orchestrator brain)."""
+        raise NotImplementedError
+
     def sync(self) -> list[str]:
         return []
 
@@ -199,6 +203,12 @@ class Claude(Adapter):
     def launch_cmd(self, prompt):
         return [self.bin(), prompt]
 
+    def json_cmd(self, prompt, schema, resume_id, cfg, run_dir=None):
+        cmd = [self.bin(), "-p", prompt, "--output-format", "json", "--json-schema", json.dumps(schema), "--allowedTools", "Read,Glob,Grep"]
+        if resume_id:
+            cmd += ["--resume", resume_id]
+        return cmd, {}
+
     def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
         cmd = [self.bin(), "-p", prompt, "--output-format", "stream-json", "--verbose",
                "--permission-mode", "acceptEdits", "--allowedTools", "Bash,Read,Edit,Write,MultiEdit,Glob,Grep"]
@@ -249,6 +259,12 @@ class Copilot(Adapter):
     def launch_cmd(self, prompt):
         return [self.bin(), "-i", prompt]
 
+    def json_cmd(self, prompt, schema, resume_id, cfg, run_dir=None):
+        # Copilot has no schema flag: the schema is embedded in the prompt and the JSON is parsed from the reply.
+        # `-p` forces --allow-all-tools, so planner/brain turns run in a throwaway detached worktree (see brain.sandbox).
+        env = {"COPILOT_OTEL_FILE_EXPORTER_PATH": str(Path(run_dir) / "otel.jsonl")} if run_dir else {}
+        return [self.bin(), "-p", prompt, "--output-format", "json", "--allow-all-tools"], env
+
     def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
         # `-p` requires --allow-all-tools; path/url confinement stays on (no --allow-all-paths/urls), mesh hooks are the guard.
         cmd = [self.bin(), "-p", prompt, "--output-format", "json", "--allow-all-tools"]
@@ -298,6 +314,12 @@ class Antigravity(Adapter):
 
     def launch_cmd(self, prompt):
         return [self.bin(), "-i", prompt]
+
+    def json_cmd(self, prompt, schema, resume_id, cfg, run_dir=None):
+        cmd = [self.bin(), "-p", prompt, "--output-format", "stream-json", "--json-schema", json.dumps(schema), "--mode", "plan"]
+        if resume_id:
+            cmd += ["--conversation", resume_id]
+        return cmd, {}
 
     def headless_cmd(self, prompt, model, resume_id, agent, cfg, run_dir=None):
         cmd = [self.bin(), "-p", prompt, "--output-format", "stream-json", "--dangerously-skip-permissions",

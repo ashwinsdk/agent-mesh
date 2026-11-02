@@ -14,7 +14,10 @@ import sys
 import time
 
 argv = sys.argv[1:]
-fmt = "claude" if "--verbose" in argv else "antigravity" if "--dangerously-skip-permissions" in argv else "copilot" if "--allow-all-tools" in argv else "claude"
+prompt = argv[argv.index("-p") + 1] if "-p" in argv else ""
+fmt = ("claude" if ("--verbose" in argv or "--allowedTools" in argv) else
+       "antigravity" if ("--dangerously-skip-permissions" in argv or "--mode" in argv) else
+       "copilot" if "--allow-all-tools" in argv else "claude")
 wid = os.environ.get("MESH_WORKER", "w-none")
 sid = f"fake-{fmt}-{wid}"
 state_dir = os.environ.get("FAKE_STATE_DIR", "/tmp")
@@ -23,6 +26,49 @@ n = int(open(cf).read()) if os.path.exists(cf) else 0
 open(cf, "w").write(str(n + 1))
 if "--resume" in argv or "--conversation" in argv:
     sid = (argv[argv.index("--resume") + 1] if "--resume" in argv else argv[argv.index("--conversation") + 1])
+
+def out(obj):
+    sys.stdout.write(json.dumps(obj) + "\n")
+    sys.stdout.flush()
+
+
+def _nth(kind):
+    p_ = os.path.join(state_dir, f"calls.{kind}")
+    n_ = int(open(p_).read()) if os.path.exists(p_) else 0
+    open(p_, "w").write(str(n_ + 1))
+    return n_
+
+
+if "MESH_PLAN_REQUEST" in prompt or "MESH_BRAIN_TURN" in prompt:
+    import re
+    kind = "plan" if "MESH_PLAN_REQUEST" in prompt else "brain"
+    n_ = _nth(kind)
+    seq = json.loads(os.environ.get(f"FAKE_{kind.upper()}_SEQ", "null"))
+    one = json.loads(os.environ.get(f"FAKE_{kind.upper()}", "null"))
+    body = (seq[min(n_, len(seq) - 1)] if seq else one)
+    if body is None:
+        body = {"actions": []} if kind == "brain" else {}
+    if os.environ.get("FAKE_PLANNER_FAIL"):
+        sys.stderr.write("planner exploded\n"); sys.exit(2)
+    text = body if isinstance(body, str) else json.dumps(body)
+    if isinstance(body, dict) and kind == "brain":
+        m = re.search(r"\[(M-[0-9a-f]{8})\]", prompt)
+        text = text.replace("$MSG", m.group(1) if m else "M-none")
+        body = json.loads(text)
+    struct = os.environ.get("FAKE_STRUCT", "1") != "0" and isinstance(body, dict)
+    psid = f"fake-{kind}-session"
+    if fmt == "claude":
+        out({"type": "result", "subtype": "success", "is_error": False, "result": "" if struct else text, "session_id": psid, "total_cost_usd": 0.02,
+             "usage": {"input_tokens": 100, "output_tokens": 50}, **({"structured_output": body} if struct else {})})
+    elif fmt == "antigravity":
+        out({"event": "init", "conversation_id": psid, "init": {}})
+        out({"event": "result", "result": {"conversation_id": psid, "status": "SUCCESS", "response": text, **({"structured_output": body} if struct else {}),
+                                           "usage": {"input_tokens": 100, "output_tokens": 50}}})
+    else:
+        out({"type": "assistant.message", "data": {"content": "```json\n" + text + "\n```", "toolRequests": []}})
+        out({"type": "session.usage_checkpoint", "data": {"totalNanoAiu": 100000000}})
+        out({"type": "result", "sessionId": psid, "exitCode": 0, "usage": {}})
+    sys.exit(0)
 
 sc = json.loads(os.environ.get("FAKE_SCENARIO", "null")) or [{"write": "out.txt", "content": "hello\n"}, {"commit": True}, {"submit": True}]
 if isinstance(sc, dict) and "by_cli" in sc:

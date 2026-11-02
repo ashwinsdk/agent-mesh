@@ -24,6 +24,11 @@ DEFAULT_CONFIG = {
                 "env_passthrough": ["ANTHROPIC_API_KEY", "GEMINI_API_KEY", "GOOGLE_API_KEY", "GITHUB_TOKEN", "GH_TOKEN",
                                     "COPILOT_*", "CLAUDE_CODE_*", "FAKE_*", "MESH_BIN_*", "PYTHONPATH"]},
     "billing": {"claude": "unknown", "copilot": "unknown", "antigravity": "unknown"},
+    "sessions": {"stale_after": 1800},
+    "app": {"cli": ""},
+    "conductor": {"auto_approve": "verified-low-risk", "max_rework": 2, "max_task_attempts": 3, "auto_review": False,
+                  "idle_exit_seconds": 900, "tick_seconds": 1.0},
+    "brain": {"timeout_seconds": 600, "max_turns_per_run": 40, "debounce_seconds": 3, "plan_timeout_seconds": 900},
 }
 
 
@@ -56,6 +61,10 @@ def register_session(db: DB, cli: str, agent: str | None = None, native_id: str 
         else:
             c.execute("INSERT INTO sessions(id,cli,agent,native_id,pid,host,model,started,last_seen,role,worker_id) VALUES(?,?,?,?,?,?,?,?,?,?,?)",
                       (sid, cli, agent, native_id, pid, socket.gethostname(), model, t, t, role, worker_id))
+            if role == "orchestrator":  # exactly one live orchestrator: retire older ones so role-addressed messages have one target
+                n = c.execute("UPDATE sessions SET status='ended', ended=? WHERE role='orchestrator' AND status IN ('active','stale') AND id!=?", (t, sid)).rowcount
+                if n:
+                    db.event(sid, "session.orchestrator_replaced", None, {"retired": n}, conn=c)
             db.event(sid, "session.start", None, {"cli": cli, "agent": agent}, conn=c)
     return sid
 
@@ -85,6 +94,19 @@ def end_session(db: DB, sid: str, status: str = "ended") -> None:
         db.event(sid, "session.end", None, {"status": status}, conn=c)
     # keep task ownership (so it is recoverable/reassignable) but free file locks
     locks.release(db, sid)
+
+
+def mark_stale(db: DB, stale_after: float = 1800) -> int:
+    """Age out interactive/orchestrator sessions that went silent (e.g. Antigravity has no SessionEnd hook).
+    Worker sessions are excluded: their liveness is owned by the worker runner/reconcile."""
+    t = now()
+    with db.tx() as c:
+        rows = c.execute("SELECT id FROM sessions WHERE status='active' AND COALESCE(role,'')!='worker' AND last_seen < ?", (t - stale_after,)).fetchall()
+        for r in rows:
+            c.execute("UPDATE sessions SET status='stale' WHERE id=?", (r["id"],))
+        if rows:
+            db.event("mesh", "session.stale", None, {"count": len(rows)}, conn=c)
+    return len(rows)
 
 
 def resolve_actor(db: DB, explicit: str | None = None) -> str:
