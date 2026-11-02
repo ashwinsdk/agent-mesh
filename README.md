@@ -4,6 +4,11 @@ Turns any git repository into a coordinated multi-agent workspace for **Claude C
 
 ## Install the tool once (any machine)
 ```sh
+brew install pipx && pipx ensurepath        # once, if you don't have pipx
+pipx install git+https://github.com/ashwinsdk/agent-mesh.git
+```
+Other forms:
+```sh
 pipx install git+https://github.com/ashwinsdk/agent-mesh.git          # latest
 pipx install git+https://github.com/ashwinsdk/agent-mesh.git@v0.1.0   # pinned release
 pipx upgrade agent-mesh                                              # later
