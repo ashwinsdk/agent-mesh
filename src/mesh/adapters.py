@@ -85,6 +85,14 @@ def hook_cmd(root_expr: str, cli: str, event: str) -> str:
     return f'{root_expr}/.mesh/bin/mesh hook {cli} {event}'
 
 
+def walk_up_cmd(cli: str, event: str, sub: str = "hook") -> str:
+    """Locate .mesh/bin/mesh by walking up from the hook's cwd (works from .agents/, subdirs, non-git dirs).
+    If mesh cannot be found, exit 0 so a missing install never blocks the CLI (fail open)."""
+    tail = f"{sub} {cli} {event}".strip()
+    return ('d="$PWD"; while [ "$d" != / ] && [ ! -x "$d/.mesh/bin/mesh" ]; do d="${d%/*}"; [ -z "$d" ] && d=/; done; '
+            f'if [ -x "$d/.mesh/bin/mesh" ]; then exec "$d/.mesh/bin/mesh" {tail}; fi; exit 0')
+
+
 class Adapter:
     name = "generic"
     binary: str | None = None
@@ -195,9 +203,8 @@ class Copilot(Adapter):
                     f"<!-- mesh:managed -->\nYou are the {a['role']} in a multi-agent team coordinated by mesh. Follow AGENTS.md.\n\n{a['body']}")
             out.append(f".github/agents/mesh-{a['id']}.agent.md: " +
                        write_owned(self.p.root / ".github" / "agents" / f"mesh-{a['id']}.agent.md", body, "mesh:managed"))
-        root = '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)"'
         def h(ev):
-            return [{"type": "command", "bash": hook_cmd(root, "copilot", ev), "timeoutSec": 5}]
+            return [{"type": "command", "bash": walk_up_cmd("copilot", ev), "timeoutSec": 5}]
         cfg = {"version": 1, "hooks": {
             "sessionStart": h("session_start"), "sessionEnd": h("session_end"),
             "preToolUse": h("pre_tool"), "postToolUse": h("post_tool"),
@@ -229,9 +236,8 @@ class Antigravity(Adapter):
         out = [f"AGENTS.md: {upsert_block(self.p.root / 'AGENTS.md', CORE)}"]
         p = self.p.root / ".agents" / "hooks.json"
         cur = json.loads(p.read_text()) if p.exists() else {}
-        root = '"$(git rev-parse --show-toplevel 2>/dev/null || pwd)"'
         def h(ev):
-            return {"type": "command", "command": hook_cmd(root, "antigravity", ev), "timeout": 5}
+            return {"type": "command", "command": walk_up_cmd("antigravity", ev), "timeout": 5}
         cur["mesh"] = {
             "enabled": True,
             "SessionStart": [h("session_start")],

@@ -276,6 +276,29 @@ class TestPortability(MeshCase):
         self.assertIn("hand-edited", out.stdout); self.assertTrue((r.root / "AGENTS.md.mesh-proposed").exists())
         self.assertIn("My edited Safety", (r.root / "AGENTS.md").read_text())
 
+    def test_hook_commands_work_from_any_cwd_and_fail_open(self):
+        """Regression: Antigravity ran hooks with cwd=.agents/ and the lookup resolved .agents/.mesh (exit 127 blocked every tool)."""
+        import tempfile
+        r = self.repo(init=False); r.mesh("init")
+        cmds = [json.loads((r.root / ".agents/hooks.json").read_text())["mesh"]["PreToolUse"][0]["hooks"][0]["command"],
+                json.loads((r.root / ".github/hooks/mesh.json").read_text())["hooks"]["preToolUse"][0]["bash"]]
+        (r.root / "deep/er").mkdir(parents=True)
+        env = {k: v for k, v in os.environ.items() if k not in ("MESH_ROOT", "PYTHONPATH")}
+        payload = json.dumps({"conversationId": "abc12345", "sessionId": "abc12345", "toolCall": {"name": "run_command", "args": {"CommandLine": "ls"}}})
+        for cmd in cmds:
+            for cwd in (r.root, r.root / ".agents", r.root / "deep/er"):
+                res = sh("sh", "-c", cmd, cwd=cwd, input=payload, env=env)
+                self.assertEqual(res.returncode, 0, (cwd, res.stderr))
+            # destructive command is still denied when found from a subdir
+            bad = json.dumps({"conversationId": "abc12345", "sessionId": "abc12345", "toolName": "bash", "toolArgs": {"command": "git reset --hard"},
+                              "toolCall": {"name": "run_command", "args": {"CommandLine": "git reset --hard"}}})
+            res = sh("sh", "-c", cmd, cwd=r.root / ".agents", input=bad, env=env)
+            self.assertIn("deny", res.stdout)
+            # no mesh anywhere above: exit 0, no output
+            with tempfile.TemporaryDirectory() as empty:
+                res = sh("sh", "-c", cmd, cwd=empty, input=payload, env=env)
+                self.assertEqual((res.returncode, res.stdout), (0, ""))
+
     def test_generated_configs_are_valid_and_scoped(self):
         r = self.repo(init=False); r.mesh("init")
         c = json.loads((r.root / ".claude/settings.json").read_text())
