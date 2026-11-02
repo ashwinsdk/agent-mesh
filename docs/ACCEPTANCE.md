@@ -23,3 +23,40 @@ Other tested: state machine, dependencies/cycles, hierarchy progress, abandoned-
 - No automatic token/context collector for Antigravity or Copilot.
 - Windows is unsupported (`fcntl`, shell shims).
 - Hook enforcement is not a security boundary.
+
+---
+# v2 (orchestration) status
+
+Run: `python3 -m unittest discover -s tests` (73 tests, ~65 s). All worker/orchestrator tests use **real runner processes driving a fake CLI** (`tests/fakecli/fake.py`) that emits claude / antigravity / copilot style streams; the real CLIs were **not** launched by the automated suite.
+
+| Requirement | Evidence (test) | Status |
+|---|---|---|
+| Dynamic creation of real independent sessions (detached processes, own process group, pid/start-time tracked) | `TestSpawn`, `test_five_parallel_workers_and_caps` | PASS (fake CLI) |
+| Agent vs session vs process distinction | `workers` table + dashboard columns; `TestEndToEnd` | PASS |
+| Spawn caps, duplicate-spawn prevention, atomic claim | `test_five_parallel…`, `test_duplicate_spawn…` | PASS |
+| Crash / kill -9 detection and safe restart | `test_kill9_runner_group_detected_and_task_resumed`, e2e zoro crash | PASS |
+| Usage-limit → fallback CLI; no fallback → task released | `test_usage_limit_falls_back…`, `test_limit_without_fallback…` | PASS |
+| Stall detection; exit-without-submit is not completion | `test_stall_is_detected…`, `test_exit_without_submit…` | PASS |
+| Kill switch | `test_halt_kills_everything_and_blocks_spawns` | PASS |
+| Worker env allow-list (no ambient secrets) | `test_worker_env_does_not_leak_ambient_secrets` | PASS |
+| Completion gates (submit only; verify bound to commit; ownership; weak; high-risk independent review; workers can't approve/integrate/spawn/halt) | `TestGates` | PASS |
+| Reject → worker resumed with feedback | `test_failing_verify_blocks_and_reject_restarts…` | PASS |
+| Dependency routing (handoff to dependents' prompt + message) | `test_full_gate_flow_and_dependency_routing` | PASS |
+| Mailbox/event injection per CLI format; retries; expiry; delivery failure; dedupe | `TestComms` | PASS (payload formats from vendor docs) |
+| Event-driven wait (<2.6 s wake, ignores noise/own events, ~0 CPU idle) | `test_wait_wakes_fast…` | PASS |
+| Hierarchical delegation needs orchestrator approval, depth-capped | `TestDelegation` | PASS |
+| Decisions ratified by orchestrator only, broadcast + ADR | `test_decision_ratification…` | PASS |
+| 6-task graph end to end (plan→3 parallel workers→verify→approve→integrate→report) | `test_six_task_graph_with_crash_recovery_completes` | PASS |
+| Cost semantics (subscription ≠ spend; api spend cap) | `test_billing_mode_controls_spend`, scale test | PASS |
+| `mesh up` prompt, autonomy opt-in, resume | `test_up_dry_run…`, `test_autonomy_accept…` | PASS (launch itself not exercised) |
+| Dashboard: all fields present or marked unavailable; 60-worker render < 0.5 s CPU | `TestDashboardScale` | PASS (curses loop not exercised) |
+| Read-only web viewer (405 on writes, Host guard, no innerHTML) | `TestWebViewer` | PASS |
+| `mesh probe` parser-coverage report | `TestProbe` | PASS (against fake) |
+
+## Not verified (needs you, with real CLIs)
+1. **Stream/usage parsers vs real output**: `mesh probe <cli> --yes` for each CLI. Copilot's JSONL schema is undocumented; its parser is generic and its tokens rely on the OTel export.
+2. **Headless runs load the project hooks** (needed for guards and mailbox injection) and honour `additionalContext`/`injectSteps` in `-p` mode.
+3. **Copilot resume-by-id** (assumed unsupported → fresh session + checkpoint brief).
+4. Interactive `mesh up` launch with each CLI (orchestrator prompt delivered as the initial prompt) and the live curses/web dashboards.
+5. The orchestrator's own judgement (planning quality, when to spawn) depends on the model following the playbook; mesh enforces the gates, not the reasoning.
+6. Orchestrator cannot be pushed events mid-turn: it relies on `mesh wait` and hook digests at tool boundaries.

@@ -153,6 +153,8 @@ def build_parser():
     x = sub.add_parser("hook"); x.add_argument("cli"); x.add_argument("event")
     sub.add_parser("statusline")
     x = sub.add_parser("dash"); x.add_argument("--once", action="store_true"); x.add_argument("--interval", type=float, default=1.0)
+    x.add_argument("--tab", help="overview|agents|sessions|tasks|comms|usage (with --once prints only that tab)")
+    x.add_argument("--web", action="store_true", help="serve the read-only web viewer on 127.0.0.1"); x.add_argument("--port", type=int, default=8765)
     x = sub.add_parser("backup"); x = sub.add_parser("restore"); x.add_argument("file", nargs="?")
     x = sub.add_parser("gc"); x.add_argument("--keep-days", type=int, default=30)
     x = sub.add_parser("run", help="launch a CLI inside a mesh session (fallback for CLIs lacking SessionEnd)")
@@ -249,8 +251,10 @@ def cmd_init(a) -> int:
 
 
 def cmd_sync(db, a, actor):
+    from . import playbooks
     for l in adapters.sync_all(db.paths, a.cli):
         print(l)
+    atomic_write(db.paths.mesh / "instructions" / "ORCHESTRATOR.md", playbooks.ORCHESTRATOR.replace("{session}", "<session>").replace("{plan_approval}", ""))
     return 0
 
 
@@ -268,6 +272,17 @@ def cmd_doctor(db, a, actor):
     print(f"git: {'yes' if core.is_git(db.paths.root) else 'NO (worktrees/integration disabled)'}")
     cfg = core.load_config(db.paths)
     print(f"validation.test: {cfg['validation']['test'] or '(not configured: integration will skip tests)'}")
+    from . import workers as _w
+    sv = db.one("SELECT value FROM meta WHERE key='schema_version'")[0]
+    print(f"schema version: {sv}")
+    cfg2 = core.load_config(db.paths)
+    print(f"autonomy accepted: {'yes by ' + cfg2['autonomy']['accepted_by'] + ' at ' + cfg2['autonomy']['accepted_at'] if cfg2['autonomy']['accepted_at'] else 'NO (needed before workers can be spawned: mesh autonomy accept)'}")
+    try:
+        _w.check_committed(db, cfg2)
+        print("mesh config committed on base branch: yes")
+    except MeshError as e:
+        print(f"WARNING {e}")
+    print(f"workers: {_w.active_count(db)} active; reconciled: {_w.reconcile(db) or 'consistent'}")
     errlog = db.paths.logs / "hook-errors.log"
     if errlog.exists():
         print(f"WARNING hook errors logged: {errlog} ({errlog.stat().st_size} bytes)")
@@ -547,11 +562,26 @@ def cmd_agents(db, a, actor):
 
 
 def cmd_dash(db, a, actor):
-    if a.once or not sys.stdout.isatty():
-        print("\n".join(t for t, _ in tui.snapshot(db.paths)))
+    from . import snapshot
+    if a.web:
+        from . import webdash
+        webdash.serve(db.paths, a.port)
+        return 0
+    if getattr(a, "json", False):
+        print(json.dumps(snapshot.build(db.paths), indent=2, default=str))
+    elif a.once or not sys.stdout.isatty():
+        if a.tab:
+            snap = snapshot.build(db.paths)
+            name = next((t for t in tui.TABS if t.lower() == a.tab.lower()), None)
+            if not name:
+                raise MeshError(f"tab must be one of {', '.join(t.lower() for t in tui.TABS)}")
+            print("\n".join(t for t, _ in tui.render(snap, name)))
+        else:
+            print(tui.render_all(db.paths))
     else:
         db.close()
-        tui.live(db.paths, a.interval)
+        start = next((i for i, t in enumerate(tui.TABS) if a.tab and t.lower() == a.tab.lower()), 0)
+        tui.live(db.paths, a.interval, start)
     return 0
 
 
@@ -589,7 +619,14 @@ def cmd_gc(db, a, actor):
     with db.tx() as c:
         n1 = c.execute("DELETE FROM events WHERE ts<?", (cutoff,)).rowcount
         n2 = c.execute("DELETE FROM usage WHERE ts<?", (cutoff,)).rowcount
-    print(f"pruned {n1} events, {n2} usage rows older than {a.keep_days}d")
+    n3 = 0
+    runs = db.paths.runtime / "runs"
+    if runs.exists():
+        live = {w["id"] for w in db.q("SELECT id FROM workers WHERE ended IS NULL")}
+        for d in runs.iterdir():
+            if d.name not in live and d.is_dir() and d.stat().st_mtime < cutoff:
+                shutil.rmtree(d, ignore_errors=True); n3 += 1
+    print(f"pruned {n1} events, {n2} usage rows older than {a.keep_days}d; removed {n3} finished worker run dirs")
     return 0
 
 

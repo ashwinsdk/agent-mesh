@@ -64,6 +64,13 @@ Read AGENTS.md. Run `.mesh/bin/mesh resume` to list interrupted tasks, then
 
 If a CLI's session id was not injected at startup, run `.mesh/bin/mesh session start --cli <claude|copilot|antigravity>` and pass `--as <id>` on every mesh command. Watch progress with `.mesh/bin/mesh dash`.
 
+## One prompt, supervised team (v2)
+```sh
+mesh up claude "Build a modern 3D website for a premium water bottle brand with a backend"   # or copilot / antigravity
+mesh dash                      # live tabs; `mesh dash --web` for a read-only browser view
+```
+The chosen CLI becomes the orchestrator (shipped playbook, nothing to paste). It plans, spawns headless worker sessions in git worktrees, supervises them event-driven, verifies their work against the real commit, and integrates it. Details, limits and the autonomy policy: [docs/ORCHESTRATION.md](docs/ORCHESTRATION.md). Check parsers against your real CLIs first: `mesh probe claude --yes`. Existing projects: `pipx install --force git+https://github.com/ashwinsdk/agent-mesh.git && mesh upgrade && mesh sync`.
+
 ## Daily use
 ```sh
 mesh task create "Add login" --files "src/auth/**" --accept "tests pass"   # orchestrator or human

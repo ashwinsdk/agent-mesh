@@ -87,8 +87,31 @@ def finish(ok=True, err=None, code=0):
     sys.exit(code)
 
 
+_ti = {}
+
+
+def task_info():
+    if not _ti:
+        mesh = os.environ.get("FAKE_MESH_CMD", "python3 -m mesh")
+        r = subprocess.run(f"{mesh} task show \"$MESH_TASK\"", shell=True, capture_output=True, text=True)
+        try:
+            _ti.update(json.loads(r.stdout))
+        except ValueError:
+            _ti.update({"title": "", "files": "[]"})
+    return _ti
+
+
 emit_init()
 for step in sc:
+    if step.get("when_title") and step["when_title"] not in task_info().get("title", ""):
+        continue
+    if step.get("owned_file"):
+        pat = json.loads(task_info().get("files") or "[]")[0]
+        d = pat[:-3] if pat.endswith("/**") else os.path.dirname(pat)
+        path = os.path.join(d, os.environ.get("MESH_TASK", "t") + ".txt") if d else os.environ.get("MESH_TASK", "t") + ".txt"
+        emit_text("", "Write", {"file_path": path})
+        os.makedirs(os.path.dirname(path) or ".", exist_ok=True)
+        open(path, "w").write(task_info().get("title", "") + "\n")
     if "say" in step:
         emit_text(step["say"])
     if "write" in step:

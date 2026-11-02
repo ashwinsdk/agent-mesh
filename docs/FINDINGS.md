@@ -39,3 +39,15 @@ automated tests (launching agent CLIs with auto-approve was blocked in the build
 3. Antigravity `injectSteps` wrapper structure follows the doc example; not live-tested.
 4. Antigravity legacy `.agents/workflows/` reportedly stopped working 2026-10-19 (third-party); not used here.
 5. Hook enforcement is advisory against a determined agent (it could run shell commands that modify files); it prevents accidents, not adversaries.
+
+---
+# v2 research additions (2026-11-02)
+Sources: [Claude Code headless / Agent SDK CLI](https://code.claude.com/docs/en/headless), [Antigravity CLI best practices](https://antigravity.google/docs/cli/best-practices/), [Antigravity headless](https://antigravity.google/docs/cli/headless/), [Copilot CLI ACP server](https://docs.github.com/en/copilot/reference/copilot-cli-reference/acp-server), local `copilot help monitoring|billing|limits`, `claude --help`, `agy --help`.
+
+| Capability | Claude Code | Antigravity | Copilot CLI |
+|---|---|---|---|
+| Headless session | `-p`; `--output-format stream-json --verbose`; `--resume <id>`; exit 0/non-zero; SIGTERM → 143 after SessionEnd hooks | `-p`; `--output-format stream-json` (`init`/`step_update`/`result`); `--conversation <id>`; `--print-timeout` (default 5m); unapproved tools are soft-denied in print mode | `-p` + `--allow-all-tools`; `--output-format json` (JSONL, schema undocumented); `--continue`; `--max-ai-credits` (soft cap, min 30) |
+| Usage in output | `result`: `total_cost_usd`, `usage`, per-model (client-side estimate); `api_retry` events with error class | `usage{input,output,thinking,cache_read,total}` per step and cumulative in `result`; no cost | none documented in JSONL; OpenTelemetry file exporter (`COPILOT_OTEL_FILE_EXPORTER_PATH`) carries GenAI token metrics |
+| Programmatic control surface | Agent SDK (Python/TS), `--bg` background sessions | stream-json stdin mode, `remote-control` daemon | `--acp` Agent Client Protocol server (stdio/TCP, public preview; no documented usage fields) |
+| Safety consequence | project hooks run in `-p` unless `--bare` (do not use `--bare`) | `--dangerously-skip-permissions` removes its prompts | `-p` forces allow-all-tools; path/URL confinement stays on |
+All of the above is **documented, not yet live-verified** by this project; `mesh probe` is the verification instrument.

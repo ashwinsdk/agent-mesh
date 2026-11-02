@@ -61,6 +61,10 @@ def add_parsers(sub):
     x.add_argument("--resume", action="store_true"); x.add_argument("--accept-autonomy", action="store_true")
     x.add_argument("--dry-run", action="store_true")
     sub.add_parser("report")
+    x = sub.add_parser("probe", help="run ONE tiny headless turn in a real CLI and report how well mesh's stream parser understood it")
+    x.add_argument("client", choices=["claude", "copilot", "antigravity"]); x.add_argument("--out", default="probe-output")
+    x.add_argument("--yes", action="store_true", help="confirm: this runs the real CLI with tool approvals pre-granted")
+    x.add_argument("--prompt", default="Create a file named hello.txt containing the word hi using your file tool, then reply with the single word done.")
 
 
 # ------------------------------------------------------------------ workers
@@ -351,6 +355,51 @@ def cmd_report(db, a, actor):
     from . import snapshot
     snap = snapshot.build(db.paths)
     print(snapshot.render_report(snap))
+    return 0
+
+
+def cmd_probe(db, a, actor):
+    """Live capture for parser verification (user-initiated; spends a few tokens). Never used by orchestration itself."""
+    import subprocess, tempfile, collections
+    from . import streams
+    if not a.yes:
+        print(AUTONOMY_TEXT + f"\n\nprobe runs `{a.client}` headless once in a scratch copy of this directory's git state. Re-run with --yes to proceed.")
+        return 1
+    cfg = load_config(db.paths)
+    ad = adapters.ADAPTERS[a.client](db.paths)
+    if not ad.available():
+        raise MeshError(f"{a.client} not installed")
+    out = Path(a.out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    scratch = Path(tempfile.mkdtemp(prefix=f"mesh-probe-{a.client}-"))
+    core.git(scratch, "init", "-q", "-b", "main"); (scratch / "README.md").write_text("probe\n")
+    core.git(scratch, "add", "-A"); core.git(scratch, "-c", "user.email=p@p", "-c", "user.name=probe", "commit", "-qm", "probe")
+    cmd, extra = ad.headless_cmd(a.prompt, None, None, None, cfg, str(out))
+    env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "USER", "LANG", "TERM", "TMPDIR", "SHELL")}
+    env.update({k: v for k, v in os.environ.items() if k.endswith("_API_KEY") or k.startswith(("COPILOT_", "CLAUDE_CODE_", "GITHUB_TOKEN", "FAKE_"))})
+    env.update(extra)
+    print(f"running in {scratch}:\n  " + " ".join(cmd[:3]) + " ... " + " ".join(cmd[4:]))
+    r = subprocess.run(cmd, cwd=scratch, env=env, capture_output=True, text=True, timeout=600)
+    (out / f"{a.client}.stream.jsonl").write_text(r.stdout); (out / f"{a.client}.stderr.log").write_text(r.stderr)
+    kinds = collections.Counter(); sess = None; usage_seen = None; cost = None; result = None
+    for line in r.stdout.splitlines():
+        for e in streams.parse_line(a.client, line):
+            kinds[e["kind"]] += 1
+            sess = sess or e.get("session")
+            if e["kind"] == "usage":
+                usage_seen = e
+            if e["kind"] == "result":
+                result, cost = e, e.get("cost")
+    otel = out / "otel.jsonl"
+    otel_usage = streams.parse_otel_file(otel.read_text(errors="ignore")) if otel.exists() else None
+    print(f"exit code: {r.returncode}   hello.txt created: {(scratch / 'hello.txt').exists()}")
+    print(f"parsed event kinds: {dict(kinds)}")
+    print(f"native session id found: {sess or 'NO'}   usage in stream: {'yes' if usage_seen else 'NO'}   cost in stream: {cost if cost is not None else 'NO'}   "
+          f"result event: {'yes ok=' + str(result.get('ok')) if result else 'NO'}")
+    if a.client == "copilot":
+        print(f"OTel token usage: {otel_usage or 'NOT FOUND (file ' + ('exists' if otel.exists() else 'missing') + ')'}")
+    raw = kinds.get("other", 0)
+    print(f"unparsed lines: {raw} (high numbers mean the parser does not match this CLI's real schema; send {out}/{a.client}.stream.jsonl to the maintainer)")
+    print(f"raw output saved in {out}")
     return 0
 
 
