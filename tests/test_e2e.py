@@ -93,17 +93,17 @@ class TestEndToEnd(WorkerCase):
 
     def test_up_dry_run_builds_orchestrator_prompt_and_requires_opt_in(self):
         r = self.repo(); os.environ["MESH_ROOT"] = str(r.root)
-        res = r.mesh("up", "claude", "Build a 3D bottle site", "--dry-run")
+        res = r.mesh("up", "claude", "Build a 3D bottle site", "--dry-run", "--legacy")
         self.assertNotEqual(res.returncode, 0); self.assertIn("PRE-GRANTED", res.stderr + res.stdout)
         r.mesh("autonomy", "accept", "--yes"); r.mesh("sync"); r.mesh("commit-config")
-        res = r.mesh("up", "claude", "Build a 3D bottle site", "--dry-run")
+        res = r.mesh("up", "claude", "Build a 3D bottle site", "--dry-run", "--legacy")
         self.assertEqual(res.returncode, 0, res.stderr)
         for needle in ("PRIMARY ORCHESTRATOR", "mesh worker spawn", "mesh wait", "mesh verify", "mesh approve", "Build a 3D bottle site", "WAIT for the user"):
             self.assertIn(needle, res.stdout)
         self.assertTrue((r.root / ".mesh/instructions/ORCHESTRATOR.md").exists())
-        res = r.mesh("up", "claude", "--dry-run")
+        res = r.mesh("up", "claude", "--dry-run", "--legacy")
         self.assertNotEqual(res.returncode, 0); self.assertIn("project prompt", res.stderr)
-        res = r.mesh("up", "claude", "--resume", "--dry-run")
+        res = r.mesh("up", "claude", "--resume", "--dry-run", "--legacy")
         self.assertEqual(res.returncode, 0); self.assertIn("RESUMING", res.stdout)
 
     def test_autonomy_accept_records_policy_and_requires_explicit_yes(self):
@@ -231,3 +231,18 @@ class TestProbe(WorkerCase):
             self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
             self.assertIn("mailbox message marked delivered by the hook: YES", res.stdout, (cli, res.stdout))
             self.assertIn("agent actually saw the injected message (token written to hello.txt): YES", res.stdout, (cli, res.stdout))
+
+
+class TestProbePlanner(WorkerCase):
+    def test_planner_probe_reports_extraction_and_validity_per_cli(self):
+        from test_conductor import PLAN
+        r = self.repo(); os.environ["MESH_ROOT"] = str(r.root); os.environ["FAKE_PLAN"] = json.dumps(PLAN)
+        for cli, struct in (("claude", "1"), ("claude", "0"), ("antigravity", "0"), ("copilot", "1")):
+            os.environ["FAKE_STRUCT"] = struct
+            res = r.mesh("probe", cli, "--planner", "--yes", "--out", str(r.root / f"p-{cli}-{struct}"))
+            self.assertEqual(res.returncode, 0, res.stderr + res.stdout)
+            self.assertIn("structured/JSON plan extracted: YES   plan valid: YES", res.stdout, (cli, struct, res.stdout))
+            self.assertIn("4 tasks in 1 epic", res.stdout)
+        os.environ["FAKE_PLAN"] = json.dumps({"summary": "nope"})  # unusable plan is reported, not hidden
+        res = r.mesh("probe", "claude", "--planner", "--yes", "--out", str(r.root / "bad"))
+        self.assertIn("plan valid: NO", res.stdout); self.assertIn("validation problems", res.stdout)

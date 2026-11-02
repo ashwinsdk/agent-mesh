@@ -62,6 +62,12 @@ def _agg(rows, key):
     return dict(out)
 
 
+def _orch_state(s: dict, busy: bool) -> str:
+    if s["status"] != "active":
+        return "TERMINATED"
+    return "THINKING" if busy else "IDLE"
+
+
 def _agent_state(s: dict) -> str:
     """State for non-worker sessions (orchestrator / interactive CLIs). Heuristic: derived from liveness only."""
     if s["status"] == "active":
@@ -86,6 +92,8 @@ def build(paths: Paths) -> dict:
         u_by_sess = {}
         for r in series:
             u_by_sess.setdefault(r["worker_id"] or r["session_id"], []).append(r)
+        bb = c.execute("SELECT value FROM meta WHERE key='brain_busy'").fetchone()
+        brain_busy = bool(bb and bb[0] == "1")
         # ---- agents
         agents = []
         wlast = {w["id"]: _rows(c, "SELECT type, ts FROM events WHERE actor=? AND type NOT IN ('tool','worker.state') ORDER BY id DESC LIMIT 1", (w["id"],)) for w in wrows}
@@ -101,12 +109,17 @@ def build(paths: Paths) -> dict:
                            "latest": (w["last_activity"] or (le[0]["type"] if le else None)), "restarts": w["restarts"], "kind": "worker"})
         wids = {w["id"] for w in wrows}
         for s in sess:
-            if s["id"] in wids:
-                continue
+            if s["id"] in wids or s["status"] != "active":
+                continue  # ended/stale/terminated sessions live in the Sessions history, not in the live agents list
             agents.append({"id": s["id"], "name": s["agent"] or s["role"] or "interactive", "role": s["role"] or "interactive", "cli": s["cli"], "model": s["model"],
                            "session": s["native_id"] or s["id"], "pid": s["pid"], "runner_pid": None, "task": s["task_id"], "state": _agent_state(s),
                            "started": s["started"], "duration": int((s["ended"] or t_now) - s["started"]), "last_activity_age": int(t_now - s["last_seen"]),
                            "progress": None, "blocker": None, "latest": None, "restarts": 0, "kind": "session", "state_heuristic": True})
+            if s["role"] == "orchestrator":
+                agents[-1]["state"] = _orch_state(s, brain_busy)
+                agents[-1]["kind"] = "orchestrator"
+                agents[-1]["name"] = "Orchestrator"
+                agents[-1]["state_heuristic"] = False
         # ---- sessions
         tot = {"created": len(sess), "active": sum(1 for s in sess if s["status"] == "active"),
                "completed": sum(1 for s in sess if s["status"] == "ended"), "failed": sum(1 for s in sess if s["status"] in ("failed", "crashed")),
@@ -192,8 +205,17 @@ def build(paths: Paths) -> dict:
             alerts.append({"level": "bad", "text": f"{len(fails)} message delivery failure(s)"})
         if halted:
             alerts.append({"level": "bad", "text": "HALTED: new spawns blocked (mesh unhalt)"})
+        run = _rows(c, "SELECT * FROM runs ORDER BY id DESC LIMIT 1")
+        att = _rows(c, "SELECT * FROM attention WHERE status='open' ORDER BY id")
+        cd = _rows(c, "SELECT * FROM conductor WHERE id=1")
+        cond = {"pid": cd[0]["pid"] if cd else None, "heartbeat_age": (t_now - cd[0]["heartbeat"]) if cd and cd[0]["heartbeat"] else None,
+                "running": bool(cd and cd[0]["pid"] and cd[0]["heartbeat"] and t_now - cd[0]["heartbeat"] < 20 and W.pid_alive(cd[0]["pid"], cd[0]["pid_start"]))}
         return {
             "version": VERSION, "generated": t_now,
+            "run": ({"id": run[0]["id"], "status": run[0]["status"], "prompt": run[0]["prompt"], "cli": run[0]["cli"], "summary": run[0]["summary"],
+                     "error": run[0]["error"], "final_validation": run[0]["final_validation"], "brain_turns": run[0]["brain_turns"]} if run else None),
+            "conductor": cond,
+            "attention": [{"id": a["id"], "kind": a["kind"], "subject": a["subject"], "title": a["title"], "detail": a["detail"], "ts": a["ts"]} for a in att],
             "project": {"name": cfg_name, "phase": phase, "progress": pct, "leaf_tasks": len(leaves), "completed_leaf": done, "workstreams": workstreams,
                         "milestones": {"completed": [w["title"] for w in workstreams if w["pct"] >= 1.0], "pending": [w["title"] for w in workstreams if w["pct"] < 1.0]},
                         "blockers": blockers, "recent_changes": recent,

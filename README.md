@@ -64,7 +64,14 @@ Read AGENTS.md. Run `.mesh/bin/mesh resume` to list interrupted tasks, then
 
 If a CLI's session id was not injected at startup, run `.mesh/bin/mesh session start --cli <claude|copilot|antigravity>` and pass `--as <id>` on every mesh command. Watch progress with `.mesh/bin/mesh dash`.
 
-## One prompt, supervised team (v2)
+## The app (v3): just run `mesh`
+```sh
+cd my-project        # a git repo with at least one commit
+mesh                 # first run: setup wizard; then type what you want built
+```
+A Claude-Code-style terminal app: conversation/activity on the left, agents / tasks / usage on the right, one input box (plain text = project prompt, `/` = commands). A background conductor executes the plan (spawn workers, verify, merge, recover) without depending on any model remembering to act; it keeps working if you close the app. Details: [docs/APP.md](docs/APP.md). `mesh status` gives a plain-text view; `mesh up` is now just an alias for the app.
+
+## One prompt, supervised team (v2, scripting)
 ```sh
 mesh up claude "Build a modern 3D website for a premium water bottle brand with a backend"   # or copilot / antigravity
 mesh dash                      # live tabs; `mesh dash --web` for a read-only browser view

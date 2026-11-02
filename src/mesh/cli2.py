@@ -57,9 +57,10 @@ def add_parsers(sub):
     x = sub.add_parser("plan"); x.add_argument("what", nargs="?", default="show")
     x = sub.add_parser("reply"); x.add_argument("message"); x.add_argument("text")
     x = sub.add_parser("up", help="start the primary orchestrator session in the chosen CLI")
-    x.add_argument("client", choices=["claude", "copilot", "antigravity"]); x.add_argument("prompt", nargs="?", default="")
+    x.add_argument("client", nargs="?", default=None, choices=["claude", "copilot", "antigravity"]); x.add_argument("prompt", nargs="?", default="")
     x.add_argument("--resume", action="store_true"); x.add_argument("--accept-autonomy", action="store_true")
     x.add_argument("--dry-run", action="store_true")
+    x.add_argument("--legacy", action="store_true", help="old behaviour: start an interactive LLM orchestrator session (deprecated)")
     sub.add_parser("report")
     x = sub.add_parser("conduct", help="run the conductor (single instance per project)"); x.add_argument("--daemon", action="store_true")
     x.add_argument("--status", action="store_true"); x.add_argument("--stop", action="store_true")
@@ -72,6 +73,7 @@ def add_parsers(sub):
     x.add_argument("client", choices=["claude", "copilot", "antigravity"]); x.add_argument("--out", default="probe-output")
     x.add_argument("--yes", action="store_true", help="confirm: this runs the real CLI with tool approvals pre-granted")
     x.add_argument("--hooks", action="store_true", help="also verify that a headless run fires mesh hooks and receives an injected mailbox message")
+    x.add_argument("--planner", action="store_true", help="instead verify the planner path: one structured-output planning turn, validated like a real plan")
     x.add_argument("--prompt", default="Create a file named hello.txt containing the word hi using your file tool, then reply with the single word done.")
 
 
@@ -325,6 +327,17 @@ def _orchestrator_prompt(db: DB, cfg: dict, sid: str, user_prompt: str, resume: 
 
 
 def cmd_up(db, a, actor):
+    if not a.legacy:
+        # v3: `mesh up` is just the app. The first positional may be a CLI name (old habit) or the prompt itself.
+        from . import cli as _cli
+        prompt = a.prompt or ""
+        if a.client is None:
+            pass
+        db.close()
+        print("note: `mesh up` now opens the app; the conductor runs the project. (Old behaviour: --legacy)", file=sys.stderr)
+        return _cli.open_app(prompt or None)
+    if a.client is None:
+        raise MeshError("--legacy needs a client: mesh up claude --legacy \"prompt\"")
     import subprocess
     cfg = load_config(db.paths)
     adapter = adapters.ADAPTERS[a.client](db.paths)
@@ -449,6 +462,27 @@ def cmd_probe(db, a, actor):
     if not ad.available():
         raise MeshError(f"{a.client} not installed")
     out = Path(a.out).resolve(); out.mkdir(parents=True, exist_ok=True)
+    if a.planner:
+        from . import brain, registry as _reg
+        run = {"prompt": "Create a tiny static website with a home page, an about page and one shared stylesheet.", "id": 0}
+        prompt = brain.planner_prompt(db, run)
+        t0 = time.time()
+        res = brain.call(db, a.client, prompt, brain.PLAN_SCHEMA, None, 900, "probe-plan")
+        src = db.paths.runtime / "runs" / "probe-plan"
+        for f in ("last.stdout.jsonl", "last.stderr.log"):
+            if (src / f).exists():
+                (out / f"{a.client}.planner.{f}").write_text((src / f).read_text())
+        errs = brain.validate_plan(res.obj, {x["id"] for x in _reg.load_agents(db.paths.agents)}) if res.obj else ["no JSON object found in the answer"]
+        print(f"planner turn finished in {time.time() - t0:.0f}s   error: {res.error or 'none'}   session id: {res.session or 'NO'}")
+        print(f"structured/JSON plan extracted: {'YES' if res.obj else 'NO'}   plan valid: {'YES' if res.obj and not errs else 'NO'}")
+        if res.obj and not errs:
+            print("plan summary: " + brain.plan_summary(res.obj))
+        else:
+            print("validation problems: " + "; ".join(errs[:6]))
+            print(f"answer text starts: {res.text[:200]!r}")
+        print(f"usage: {res.usage}   cost: {res.cost}   AIU: {res.aiu}")
+        print(f"raw output saved in {out} (send {a.client}.planner.last.stdout.jsonl if anything is NO)")
+        return 0
     scratch = Path(tempfile.mkdtemp(prefix=f"mesh-probe-{a.client}-"))
     core.git(scratch, "init", "-q", "-b", "main"); (scratch / "README.md").write_text("probe\n")
     core.git(scratch, "add", "-A"); core.git(scratch, "-c", "user.email=p@p", "-c", "user.name=probe", "commit", "-qm", "probe")

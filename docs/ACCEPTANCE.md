@@ -60,3 +60,22 @@ Run: `python3 -m unittest discover -s tests` (73 tests, ~65 s). All worker/orche
 4. Interactive `mesh up` launch with each CLI (orchestrator prompt delivered as the initial prompt) and the live curses/web dashboards.
 5. The orchestrator's own judgement (planning quality, when to spawn) depends on the model following the playbook; mesh enforces the gates, not the reasoning.
 6. Orchestrator cannot be pushed events mid-turn: it relies on `mesh wait` and hook digests at tool boundaries.
+
+---
+# v3 (app + conductor) status
+Run: `python3 -m unittest discover -s tests` (core, no Textual needed) and, to include the app tests, `python -m venv v && v/bin/pip install textual && v/bin/python -m unittest discover -s tests`.
+| Your issue | Fix | Evidence |
+|---|---|---|
+| 1. every `mesh up` made an orchestrator; no workers | exactly one active run and one orchestrator row; older orchestrators are retired; stale/ghost sessions age out and are hidden; workers spawned by code | `test_stale_sessions_age_out_and_orchestrator_is_singular`, `test_orchestrator_is_one_row_and_no_ghost_sessions` |
+| 3. tasks created but never executed | the conductor dispatches ready tasks itself; spawn failures are visible (`dispatch.error` + attention item) | `test_REGRESSION_tasks_created_but_never_executed`, `test_dispatch_failure_is_visible_not_silent`, `test_prompt_to_complete_with_no_llm_driving_execution` |
+| 2/4. clean interactive TUI | `mesh` opens a Textual app (activity, agents, tasks, usage, needs-you, drill-downs, wizard) | `tests/test_app.py` (pilot): layout at 80×24/120×40/200×50, wizard, F-keys, agent view, full prompt→plan→approve→complete flow through the UI, re-attach after quit |
+| rework / escalation / failure policy | auto verify → approve/merge (low risk, strong checks), rework ≤ `max_rework`, escalate; attempts cap; weak/high-risk ask the human | `TestJudgement` |
+| plan validity and brain safety | schema + cycle/ownership/agent validation with one repair retry; brain actions whitelisted | `TestPlanner`, `test_invalid_brain_actions_are_skipped_and_surfaced` |
+| conductor lifecycle | single instance (flock), survives UI exit, kill -9 recovery | `TestLifecycle` |
+| packaging | Textual only in the app; vendored project copy and hooks never import it | `TestPackaging` |
+
+## Not verified (needs you, with real CLIs)
+1. `mesh probe <cli> --planner --yes`: real planner output (Claude `structured_output`, Antigravity `--json-schema` result, Copilot fenced JSON) has not been captured; parsers follow docs and tolerate text/fenced JSON.
+2. `mesh probe <cli> --hooks --yes` (headless hooks) is still pending from earlier.
+3. The live look and feel in a real terminal (tested headlessly with Textual's pilot; colours, mouse and very small terminals not exercised).
+4. Auto-approval trusts the project's verify commands; weak verification always asks you.

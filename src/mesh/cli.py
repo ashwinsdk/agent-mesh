@@ -161,6 +161,7 @@ def build_parser():
     x = sub.add_parser("run", help="launch a CLI inside a mesh session (fallback for CLIs lacking SessionEnd)")
     x.add_argument("client"); x.add_argument("--task"); x.add_argument("--agent"); x.add_argument("--prompt", default="")
     cli2.add_parsers(sub)
+    sub.add_parser("tui", help="open the interactive app (same as running `mesh` with no arguments)")
     return ap
 
 
@@ -179,8 +180,40 @@ def _hoist_global_flags(argv: list[str]) -> list[str]:
     return front + out
 
 
+def open_app(prompt: str | None = None) -> int:
+    """`mesh` with no arguments: the interactive app. Offers to initialise the project on first use."""
+    try:
+        root = find_root()
+    except MeshError:
+        if not sys.stdin.isatty():
+            print("mesh: not inside a mesh project. Run `mesh init` first.", file=sys.stderr)
+            return 1
+        if input(f"No agent-mesh project in {os.getcwd()}. Initialise one here? [Y/n] ").strip().lower() not in ("", "y", "yes"):
+            return 1
+        cmd_init(argparse.Namespace(no_sync=False, name=None))
+        root = find_root()
+    paths = Paths(root)
+    if not core.is_git(root):
+        print("mesh: this folder is not a git repository (worker isolation needs git). Run `git init` and make a first commit.", file=sys.stderr)
+        return 1
+    if prompt:
+        from .app import setup as _setup
+        if not _setup.needs_setup(paths):
+            from . import conductor, runs
+            db = DB(paths)
+            try:
+                runs.enqueue(db, "submit_prompt", {"prompt": prompt}, "human")
+            finally:
+                db.close()
+            conductor.start_daemon(paths)
+    from . import app
+    return app.run(paths)
+
+
 def main(argv=None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
+    if not argv:
+        return open_app()
     if not argv or argv[0] not in ("hook", "statusline"):
         argv = _hoist_global_flags(argv)
     args = build_parser().parse_args(argv)
@@ -196,6 +229,8 @@ def main(argv=None) -> int:
 
 def dispatch(a) -> int:
     c = a.cmd
+    if c == "tui":
+        return open_app()
     if c == "hook":
         return hooks.run(a.cli, a.event)
     if c == "statusline":
