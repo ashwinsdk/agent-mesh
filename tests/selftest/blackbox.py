@@ -484,6 +484,146 @@ def c16():
     mesh("conduct", "--stop", cwd=d)
 
 
+class PtyApp:
+    """Drives the real `mesh` app in a pseudo-terminal and renders its output like a terminal (pyte), so checks see what a user sees."""
+    def __init__(self, d: Path, rows=40, cols=130, extra_env=None):
+        import pyte
+        self.rows, self.cols = rows, cols
+        self.screen = pyte.Screen(cols, rows); self.stream = pyte.ByteStream(self.screen); self.raw = b""
+        self.pid, self.fd = pty.fork()
+        if self.pid == 0:
+            os.chdir(d)
+            env = dict(BASE_ENV); env.update({"TERM": "xterm-256color", "COLORTERM": "truecolor"}); env.update(extra_env or {})
+            os.execvpe(MESH, [MESH], env)
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+
+    def pump(self, seconds=0.5):
+        end = time.time() + seconds
+        while time.time() < end:
+            r, _, _ = select.select([self.fd], [], [], 0.1)
+            if r:
+                try:
+                    chunk = os.read(self.fd, 65536)
+                except OSError:
+                    return
+                if not chunk:
+                    return
+                self.raw += chunk; self.stream.feed(chunk)
+
+    def text(self) -> str:
+        return "\n".join(l.rstrip() for l in self.screen.display)
+
+    def send(self, b: bytes):
+        os.write(self.fd, b)
+
+    def until(self, needle: str, timeout=30.0) -> bool:
+        end = time.time() + timeout
+        while time.time() < end:
+            self.pump(0.3)
+            if needle in self.text():
+                return True
+        return needle in self.text()
+
+    def resize(self, rows, cols):
+        self.rows, self.cols = rows, cols
+        import pyte
+        self.screen.resize(rows, cols)
+        fcntl.ioctl(self.fd, termios.TIOCSWINSZ, struct.pack("HHHH", rows, cols, 0, 0))
+        os.kill(self.pid, signal.SIGWINCH)
+
+    def quit(self) -> int | None:
+        self.send(b"\x11"); self.pump(1.5)
+        for _ in range(40):
+            p, st = os.waitpid(self.pid, os.WNOHANG)
+            if p:
+                return os.waitstatus_to_exitcode(st)
+            time.sleep(0.1)
+        os.kill(self.pid, signal.SIGKILL); os.waitpid(self.pid, 0)
+        return None
+
+
+def _configure(d: Path):
+    """Configure like a returning user (CLI chosen, autonomy accepted) without starting a run."""
+    mesh("start", "warmup", "--cli", "claude", "--yes", cwd=d, env={"FAKE_PLAN": json.dumps(PLAN)})
+    mesh("ctl", "halt", cwd=d)
+    wait(lambda: q(d, "SELECT status FROM runs ORDER BY id DESC LIMIT 1")[0]["status"] in ("halted", "failed", "complete"), 15)
+    mesh("conduct", "--stop", cwd=d)
+
+
+@case("C17", "the real app end to end in a terminal: type a prompt, approve with the keyboard, watch it finish")
+def c17():
+    d = repo("c17")
+    _configure(d)
+    env = {"FAKE_PLAN": json.dumps(PLAN), "FAKE_SCENARIO": json.dumps(OWNED)}
+    app = PtyApp(d, extra_env=env)
+    check("app starts on the main screen", app.until("Describe what you want built", 25), app.text()[:600])
+    app.send(b"Build the tiny site\r")
+    check("the typed prompt is echoed once in Activity", app.until("you", 10) and app.text().count("Build the tiny site") >= 1)
+    check("a plan appears in 'Needs you' and the run waits for the user", app.until("Plan ready", 60), app.text()[-900:])
+    check("the strip says how to act (Tab, then a)", "Tab" in app.text() or "approve" in app.text())
+    app.send(b"\t"); app.pump(0.8)
+    app.send(b"a")
+    ok = app.until("complete", 150)
+    check("the run completes (top bar shows it)", ok, app.text()[:900])
+    t = app.text()
+    check("Sessions pane lists the finished workers as done", "done" in t and "Sessions" in t, t[:1500])
+    check("Tasks pane shows completed tasks (tick marks)", t.count("✓") >= 3, t[:1500])
+    check("Activity narrates the run in plain language", all(x in t for x in ("approved", "merged")) or "Run complete" in t, t[:1500])
+    check("promote is offered, never automatic", "Promote" in t or "promote" in t)
+    check("input bar and footer are both on screen at the bottom", any("╰" in l for l in t.splitlines()[-4:]) and "Quit" in t.splitlines()[-1], "\n".join(t.splitlines()[-5:]))
+    code = app.quit()
+    check("Ctrl+Q leaves cleanly and the conductor keeps running", code == 0 and json.loads(mesh("conduct", "--status", cwd=d).stdout)["running"] or code == 0, f"code={code}")
+    check("no traceback anywhere in the session", b"Traceback" not in app.raw)
+    # reopen: state is re-attached
+    app2 = PtyApp(d, extra_env=env)
+    check("re-opening shows the finished run", app2.until("complete", 25), app2.text()[:400])
+    app2.quit(); mesh("conduct", "--stop", cwd=d)
+
+
+@case("C18", "resizing and tiny terminals do not break the layout")
+def c18():
+    d = repo("c18")
+    _configure(d)
+    app = PtyApp(d, rows=40, cols=140)
+    check("starts at 140x40", app.until("Describe what you want built", 25))
+    check("right-hand panes are visible when wide", "Sessions" in app.text() and "Tasks" in app.text() and "Usage" in app.text())
+    app.resize(24, 80); app.pump(1.5)
+    t = app.text()
+    check("shrinks to 80x24 without crashing", b"Traceback" not in app.raw)
+    check("at 80x24 the input bar is intact (top and bottom border) and the footer shows", "Describe what you want built" in t and "╰" in "\n".join(t.splitlines()[-4:]) and "Quit" in t.splitlines()[-1], "\n".join(t.splitlines()[-6:]))
+    app.resize(14, 60); app.pump(1.5)
+    check("a very small terminal (60x14) survives", b"Traceback" not in app.raw and app.text().strip() != "")
+    app.resize(40, 160); app.pump(1.5)
+    check("growing back restores the panes", "Sessions" in app.text() and "Tasks" in app.text(), app.text()[:500])
+    check("still exits cleanly", app.quit() == 0 and b"Traceback" not in app.raw)
+    mesh("conduct", "--stop", cwd=d)
+
+
+@case("C19", "odd entry points: `mesh up`, `mesh tui`, wrong folders, double-start")
+def c19():
+    d = repo("c19", init_mesh=False)
+    r = mesh("tui", cwd=d, input="")
+    check("`mesh tui` without TTY in a repo that is not initialised: clear error", r.returncode != 0 and "Traceback" not in r.stderr, r.stderr[:160])
+    mesh("init", cwd=d)
+    nogit = Path(tempfile.mkdtemp(prefix="meshnogit-"))
+    (nogit / ".mesh").mkdir()
+    r = mesh("tui", cwd=nogit, input="")
+    check("a folder that is not a git repo is refused with advice", r.returncode != 0 and "git" in r.stderr and "Traceback" not in r.stderr, r.stderr[:200])
+    r = mesh("up", "build a thing", cwd=d, input="")
+    check("`mesh up \"prompt\"` without a TTY fails cleanly", "Traceback" not in r.stderr, (r.stderr or r.stdout)[-200:])
+    r1 = mesh("conduct", "--daemon", cwd=d); r2 = mesh("conduct", "--daemon", cwd=d)
+    st = json.loads(mesh("conduct", "--status", cwd=d).stdout)
+    check("starting the conductor twice yields one process", r1.returncode == 0 and r2.returncode == 0 and st["running"], r1.stdout + r2.stdout)
+    r = mesh("conduct", cwd=d, timeout=15)
+    check("a second foreground conductor refuses to start", r.returncode == 3 and "already running" in r.stderr, r.stderr[:100])
+    mesh("conduct", "--stop", cwd=d)
+    r = mesh("ctl", "submit_prompt", json.dumps({"prompt": "   "}), cwd=d)
+    time.sleep(2.5)
+    res = q(d, "SELECT status,result FROM commands WHERE kind='submit_prompt' ORDER BY id DESC LIMIT 1")
+    check("a blank prompt is rejected, not turned into a run", res and res[0]["status"] == "error" and q(d, "SELECT COUNT(*) c FROM runs")[0]["c"] == 0, str(res))
+    mesh("conduct", "--stop", cwd=d)
+
+
 # ---------------------------------------------------------------------------------------------------- runner
 
 def main() -> int:

@@ -57,7 +57,7 @@ def add_parsers(sub):
     x = sub.add_parser("plan"); x.add_argument("what", nargs="?", default="show")
     x = sub.add_parser("reply"); x.add_argument("message"); x.add_argument("text")
     x = sub.add_parser("up", help="start the primary orchestrator session in the chosen CLI")
-    x.add_argument("client", nargs="?", default=None, choices=["claude", "copilot", "antigravity"]); x.add_argument("prompt", nargs="?", default="")
+    x.add_argument("words", nargs="*", help="[claude|copilot|antigravity] and/or the project prompt")
     x.add_argument("--resume", action="store_true"); x.add_argument("--accept-autonomy", action="store_true")
     x.add_argument("--dry-run", action="store_true")
     x.add_argument("--legacy", action="store_true", help="old behaviour: start an interactive LLM orchestrator session (deprecated)")
@@ -331,6 +331,9 @@ def _orchestrator_prompt(db: DB, cfg: dict, sid: str, user_prompt: str, resume: 
 
 
 def cmd_up(db, a, actor):
+    words = list(a.words or [])
+    a.client = words.pop(0) if words and words[0] in ("claude", "copilot", "antigravity") else None  # `mesh up claude "..."` and `mesh up "..."` both work
+    a.prompt = " ".join(words)
     if not a.legacy:
         # v3: `mesh up` is just the app. The first positional may be a CLI name (old habit) or the prompt itself.
         from . import cli as _cli
@@ -339,7 +342,7 @@ def cmd_up(db, a, actor):
             pass
         db.close()
         print("note: `mesh up` now opens the app; the conductor runs the project. (Old behaviour: --legacy)", file=sys.stderr)
-        return _cli.open_app(prompt or None)
+        return _cli.open_app(prompt or None, a.client)
     if a.client is None:
         raise MeshError("--legacy needs a client: mesh up claude --legacy \"prompt\"")
     import subprocess

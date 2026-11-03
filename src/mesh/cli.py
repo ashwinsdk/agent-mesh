@@ -182,8 +182,16 @@ def _hoist_global_flags(argv: list[str]) -> list[str]:
     return front + out
 
 
-def open_app(prompt: str | None = None) -> int:
+def open_app(prompt: str | None = None, cli: str | None = None) -> int:
     """`mesh` with no arguments: the interactive app. Offers to initialise the project on first use."""
+    if not (sys.stdin.isatty() and sys.stdout.isatty()):
+        try:
+            find_root()
+        except MeshError:
+            print("mesh: not inside a mesh project. Run `mesh init` first.", file=sys.stderr)
+            return 1
+        print("mesh: the app needs an interactive terminal. In scripts use `mesh status`, `mesh start \"<prompt>\" --wait` and `mesh ctl <command>`.", file=sys.stderr)
+        return 2
     try:
         root = find_root()
     except MeshError:
@@ -204,7 +212,7 @@ def open_app(prompt: str | None = None) -> int:
             from . import conductor, runs
             db = DB(paths)
             try:
-                runs.enqueue(db, "submit_prompt", {"prompt": prompt}, "human")
+                runs.enqueue(db, "submit_prompt", {"prompt": prompt, "cli": cli}, "human")
             finally:
                 db.close()
             conductor.start_daemon(paths)

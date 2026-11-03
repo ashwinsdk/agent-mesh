@@ -343,3 +343,19 @@ class TestLifecycle(CondCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestHaltDoesNotPoisonNewRuns(CondCase):
+    def test_REGRESSION_new_prompt_after_halt_can_spawn_workers_again(self):
+        r = self.project(); db = self.cond.db
+        self.cmd("submit_prompt", prompt="first", cli="claude"); self.run_until(lambda: self.status() == "awaiting_approval")
+        self.cmd("halt")
+        self.assertTrue(self.run_until(lambda: self.status() == "halted"))
+        self.assertEqual(db.one("SELECT value FROM meta WHERE key='halted'")["value"], "1")
+        self.cmd("submit_prompt", prompt="second try", cli="claude")  # no /unhalt needed
+        self.assertTrue(self.run_until(lambda: self.status() == "awaiting_approval" and self.cur_run()["prompt"] == "second try"))
+        self.assertIsNone(db.one("SELECT value FROM meta WHERE key='halted'"))
+        self.cmd("approve_item", id=runs.open_attention(db)[0]["id"])
+        self.assertTrue(self.run_until(lambda: self.status() in ("complete", "failed"), 150), self.status())
+        self.assertEqual(self.status(), "complete")
+        self.assertFalse(db.q("SELECT 1 FROM events WHERE type='dispatch.error'"))

@@ -277,6 +277,7 @@ class Conductor:
                 raise MeshError("no supported CLI found on this machine")
             if not cfg["app"].get("cli"):
                 core.set_toml_section(self.paths.config, "app", {"cli": cli})  # remember it so the app does not ask again
+            workers.unhalt(db)  # a new objective means "go": a previous /halt must not silently block this run's workers
             rid = runs.create_run(db, text, cli, actor)
             core.register_session(db, cli, "orchestrator", None, os.getpid(), None, role="orchestrator", session_id=f"orch-{rid}")
             return f"run {rid} started with {cli}"
@@ -300,6 +301,7 @@ class Conductor:
         if kind == "approve_plan":
             if run["status"] != "awaiting_approval":
                 raise MeshError(f"run is {run['status']}, not awaiting approval")
+            workers.unhalt(db)
             runs.set_status(db, rid, "executing", "plan approved")
             for a in db.q("SELECT id FROM attention WHERE status='open' AND kind='plan_approval' AND run_id=?", (rid,)):
                 runs.resolve_attention(db, a["id"], actor)

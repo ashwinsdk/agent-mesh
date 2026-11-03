@@ -138,3 +138,11 @@ class TestPackaging(MeshCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TestNonInteractive(MeshCase):
+    def test_app_entry_points_fail_fast_without_a_terminal(self):
+        r = self.repo()
+        for args in (["tui"], ["up", "build something"], []):
+            res = sh(sys.executable, "-m", "mesh", *args, cwd=r.root, env=r.env(), input="")
+            self.assertEqual(res.returncode, 2, (args, res.stderr)); self.assertIn("interactive terminal", res.stderr); self.assertNotIn("Traceback", res.stderr)
