@@ -88,6 +88,8 @@ def activity(paths: Paths, limit: int = 80) -> list[dict]:
                 lvl, icon, text = "bad", "■", "Halt requested"
             elif t == "attention.open":
                 lvl, icon, text = "warn", "!", f"Needs you: {d.get('title', '')[:140]}"
+            elif t == "config.changed_externally":
+                lvl, icon, text = "warn", "⚠", ".mesh/mesh.toml was edited outside mesh: " + "; ".join(d.get("changes", [])[:3]) + " (last mesh-written copy: " + str(d.get("backup", "")).split("/.mesh/")[-1] + ")"
             elif t == "command.error":
                 lvl, icon, text = "bad", "✗", f"Command {d.get('kind')} failed: {d.get('error', '')[:120]}"
             if text:

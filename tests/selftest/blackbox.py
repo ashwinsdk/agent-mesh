@@ -450,6 +450,40 @@ def c14():
     check("task list with 500 tasks is fast", r.returncode == 0 and dt < 4, f"{dt:.1f}s")
 
 
+@case("C15", "workers cannot see mesh internals; the shim still works; nothing is deleted by merges")
+def c15():
+    d = repo("c15")
+    r, env = _start_run(d, extra_env={"FAKE_MESH_CMD": ".mesh/bin/mesh"})  # workers run mesh the way AGENTS.md tells real agents to
+    _approve_plan(d, env)
+    st = wait(lambda: q(d, "SELECT status FROM runs")[0]["status"] in ("complete", "failed") and q(d, "SELECT status FROM runs")[0]["status"], 150)
+    check("run completes with workers using the project-local shim", st == "complete", f"{st} {q(d, 'SELECT error FROM runs')[0]['error']}")
+    wts = [p for p in (d / ".mesh/runtime/worktrees").iterdir() if p.name.startswith("T-")]
+    check("worker worktrees exist", len(wts) == 3, str(wts))
+    for wt in wts:
+        check(f"{wt.name}: mesh library/memory/config are invisible", not any((wt / h).exists() for h in (".mesh/lib", ".mesh/memory", ".mesh/mesh.toml", ".mesh/agents")))
+        check(f"{wt.name}: shim is present and git status is clean", (wt / ".mesh/bin/mesh").exists() and sh("git", "status", "--porcelain", cwd=wt).stdout.strip() == "")
+    iw = d / ".mesh/runtime/worktrees/_integration"
+    check("integration branch kept .mesh intact after 3 merges", (iw / ".mesh/lib/mesh/__init__.py").exists() and (iw / ".mesh/mesh.toml").exists())
+    check("the work itself is on the integration branch", (iw / "src").exists() and (iw / "docs").exists() and (iw / "tests").exists())
+    mesh("conduct", "--stop", cwd=d)
+
+
+@case("C16", "config edited outside mesh is noticed; protected files and the database are guarded")
+def c16():
+    d = repo("c16")
+    r, env = _start_run(d)
+    toml = d / ".mesh/mesh.toml"
+    toml.write_text(toml.read_text().replace("max_workers = 6", "max_workers = 2") if "max_workers = 6" in toml.read_text() else toml.read_text() + "\n[workers]\nmax_workers = 2\n")
+    ev = wait(lambda: q(d, "SELECT data FROM events WHERE type='config.changed_externally'"), 20)
+    check("out-of-band edit is reported with what changed", bool(ev) and "workers.max_workers" in ev[0]["data"], str(ev))
+    for cmd, label in (("sqlite3 .mesh/runtime/mesh.db .tables", "database"), ("echo x >> .mesh/mesh.toml", "config write"), ("sed -i '' s/a/b/ .mesh/lib/mesh/cli.py", "library write")):
+        res = mesh("hook", "claude", "pre_tool", cwd=d, input=json.dumps({"session_id": "g1", "tool_name": "Bash", "tool_input": {"command": cmd}, "cwd": str(d)}))
+        check(f"guard blocks {label}", "deny" in res.stdout, res.stdout[:100])
+    res = mesh("hook", "claude", "pre_tool", cwd=d, input=json.dumps({"session_id": "g1", "tool_name": "Bash", "tool_input": {"command": "cat .mesh/lib/mesh/cli.py | head -3"}, "cwd": str(d)}))
+    check("reading is still allowed", res.stdout == "", res.stdout[:100])
+    mesh("conduct", "--stop", cwd=d)
+
+
 # ---------------------------------------------------------------------------------------------------- runner
 
 def main() -> int:

@@ -174,7 +174,7 @@ class Claude(Adapter):
         cur = json.loads(p.read_text()) if p.exists() else {}
         root = '"$CLAUDE_PROJECT_DIR"'
         def h(ev, t=5):
-            return {"type": "command", "command": hook_cmd(root, "claude", ev), "timeout": t}
+            return {"type": "command", "command": walk_up_cmd("claude", ev), "timeout": t}
         hooks = cur.setdefault("hooks", {})
         for ev in list(hooks):
             hooks[ev] = [g for g in hooks[ev] if not any("mesh hook" in x.get("command", "") for x in g.get("hooks", []))]
@@ -358,6 +358,6 @@ def vendor_lib(paths: Paths) -> str:
         shutil.copy2(f, dst / f.name)
     shim = paths.mesh / "bin" / "mesh"
     shim.parent.mkdir(parents=True, exist_ok=True)
-    atomic_write(shim, '#!/bin/sh\nD="$(cd "$(dirname "$0")" && pwd)"\nPYTHONPATH="$D/../lib${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m mesh "$@"\n')
+    atomic_write(shim, '#!/bin/sh\nD="$(cd "$(dirname "$0")" && pwd)"\nL="$D/../lib"\n[ -d "$L/mesh" ] || L="${MESH_ROOT:-.}/.mesh/lib"\nPYTHONPATH="$L${PYTHONPATH:+:$PYTHONPATH}" exec python3 -m mesh "$@"\n')
     shim.chmod(0o755)
     return "vendored to .mesh/lib/mesh"

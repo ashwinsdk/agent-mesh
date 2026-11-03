@@ -20,6 +20,15 @@ def base_branch(db: DB) -> str:
     return git(db.paths.root, "rev-parse", "--abbrev-ref", "HEAD").stdout.strip()
 
 
+HIDDEN_FROM_WORKERS = ["/.mesh/lib/", "/.mesh/memory/", "/.mesh/agents/", "/.mesh/instructions/", "/.mesh/mesh.toml"]
+
+
+def _shim_has_fallback(db: DB) -> bool:
+    """Only hide .mesh/lib when this project's shim can find it via $MESH_ROOT (older shims need it next to them)."""
+    shim = db.paths.mesh / "bin" / "mesh"
+    return shim.exists() and "MESH_ROOT" in shim.read_text()
+
+
 def worktree_create(db: DB, task_id: str, base: str | None = None) -> Path:
     t = tasks.get(db, task_id)
     root = db.paths.root
@@ -30,8 +39,15 @@ def worktree_create(db: DB, task_id: str, base: str | None = None) -> Path:
         return path
     db.paths.worktrees.mkdir(parents=True, exist_ok=True)
     exists = git(root, "rev-parse", "--verify", "-q", branch, check=False).returncode == 0
-    args = ["worktree", "add", str(path)] + ([branch] if exists else ["-b", branch, base])
+    hide = _shim_has_fallback(db)
+    # Workers do not need (and waste a third of their tool calls on) mesh's own source, memory and config: keep them out of the
+    # working tree with a sparse checkout. Unlike deleting them, this never shows up as a deletion and never reaches a commit.
+    args = ["worktree", "add"] + (["--no-checkout"] if hide else []) + [str(path)] + ([branch] if exists else ["-b", branch, base])
     git(root, *args)
+    if hide:
+        git(root, "sparse-checkout", "init", "--no-cone", cwd=path)
+        git(root, "sparse-checkout", "set", "/*", *[f"!{h}" for h in HIDDEN_FROM_WORKERS], cwd=path)
+        git(root, "checkout", "-q", branch if exists else "HEAD", cwd=path)
     with db.tx() as c:
         c.execute("UPDATE tasks SET branch=? WHERE id=?", (branch, task_id))
         db.event(t["session_id"] or "mesh", "worktree.create", task_id, {"branch": branch}, conn=c)

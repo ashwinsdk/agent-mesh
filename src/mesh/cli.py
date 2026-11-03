@@ -262,6 +262,7 @@ def cmd_init(a) -> int:
     if not paths.config.exists():
         atomic_write(paths.config, DEFAULT_TOML.format(name=a.name or root.name, profile=det["profile"],
                                                         manifests=",".join(det["manifests"]) or "none", test=det["test"], lint=det["lint"]))
+        core._record_good(paths.config)
     if not (paths.memory / "project.md").exists():
         atomic_write(paths.memory / "project.md", SEED_PROJECT)
     for f, title in (("lessons.md", "Lessons learned"), ("rejected.md", "Rejected approaches"), ("debt.md", "Technical debt")):

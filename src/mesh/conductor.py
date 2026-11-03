@@ -22,6 +22,7 @@ from .db import DB, MeshError, Paths, now
 
 LEAF_SKIP = ("epic", "project")
 BRAIN_TYPES = ("question", "blocker", "decision", "spawn_request")
+SYSTEM_NOTICE_PREFIXES = ("unsub-", "fail-", "stall-", "submit-", "depready-")  # raised by mesh itself; the conductor already handles them
 
 
 # ------------------------------------------------------------------ lock / status / daemon
@@ -175,6 +176,13 @@ class Conductor:
         self.started = now()
         self._idle_since = now()
 
+    def check_config_drift(self) -> None:
+        """If .mesh/mesh.toml changed outside mesh (hand edit, or an agent despite the guards) say so once, with what changed."""
+        d = core.config_drift(self.paths)
+        if d and d["sha"] != getattr(self, "_drift_reported", None):
+            self._drift_reported = d["sha"]
+            self.db.event("conductor", "config.changed_externally", None, {"changes": d["changes"][:6], "backup": d["backup"]})
+
     def limits_refresh(self, force: bool = False, copilot: bool = False) -> str:
         """Ask Antigravity for its own /usage (free: zero tokens, verified) in a background thread. The first explicit refresh opts the project in
         to periodic ones. Copilot's `-p /usage` runs a real model session (~0.7 AIU, verified), so it only ever runs on explicit request."""
@@ -216,6 +224,7 @@ class Conductor:
         core.mark_stale(db, cfg["sessions"]["stale_after"])
         acts += self.process_commands()
         self.collect_limits()
+        self.check_config_drift()
         if cfg["limits"]["enabled"] and now() - self.last_limits >= cfg["limits"]["refresh_seconds"]:
             self.limits_refresh()
         run = runs.active_run(db)
@@ -529,8 +538,12 @@ class Conductor:
         db = self.db
         if any(k[0] == "brain" for k in self.futs) or now() < self.brain_backoff_until or now() - self.last_brain_end < cfg["brain"]["debounce_seconds"]:
             return []
-        msgs = [m for m in db.q("SELECT * FROM messages WHERE recipient='role:orchestrator' AND acked=0 AND delivery_state!='failed' ORDER BY ts LIMIT 12")
-                if (m["type"] in BRAIN_TYPES or m["sender"] == "human") and not json.loads(m["ack_by"] or "[]")]
+        open_msgs = [m for m in db.q("SELECT * FROM messages WHERE recipient='role:orchestrator' AND acked=0 AND delivery_state!='failed' ORDER BY ts LIMIT 40")
+                     if not json.loads(m["ack_by"] or "[]")]
+        for m in open_msgs:  # mesh's own notices are information for the log, not questions for the brain: acknowledge them
+            if (m["dedupe_key"] or "").startswith(SYSTEM_NOTICE_PREFIXES):
+                bus.ack(db, "conductor", m["id"])
+        msgs = [m for m in open_msgs if (m["type"] in BRAIN_TYPES or m["sender"] == "human") and not (m["dedupe_key"] or "").startswith(SYSTEM_NOTICE_PREFIXES)][:12]
         esc = [a for a in db.q("SELECT * FROM attention WHERE status='open' AND kind='escalation' ORDER BY id")
                if not json.loads(a["payload"] or "{}").get("brain_tried")]
         if not msgs and not esc:

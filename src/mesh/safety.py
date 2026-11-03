@@ -82,8 +82,24 @@ DESTRUCTIVE = [
 _RM_RF = re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-r\s+-f|-f\s+-r)\b")
 
 
+_PROTECTED_SHELL = re.compile(r"\.mesh/(?:mesh\.toml|lib\b|memory/project\.md|instructions\b|agents\b)|(?:^|[\s/])\.mesh\b[^\s]*/(?:mesh\.toml)")
+_WRITE_HINT = re.compile(r"(>>?|\btee\b|\bsed\s+-[a-z]*i|\bperl\s+-[a-z]*i|\bmv\b|\bcp\b|\brm\b|\btruncate\b|\bdd\b|\binstall\b|\bchmod\b|\bln\b|\bpython3?\s+-c\b|\bnode\s+-e\b|\bruby\s+-e\b|\bgit\s+(checkout|restore|reset)\b)")
+
+
+def check_mesh_internals(cmd: str) -> str | None:
+    """Agents must use `mesh` commands, never the coordination database or mesh's own config/library by hand."""
+    if re.search(r"mesh\.db", cmd):
+        return "direct access to the mesh database (use `mesh` commands)"
+    if _PROTECTED_SHELL.search(cmd) and _WRITE_HINT.search(cmd):
+        return "modifying mesh's own config/library/memory from the shell (use `mesh` commands)"
+    return None
+
+
 def check_command(cmd: str) -> str | None:
     """Return a human-readable reason if the command needs explicit human approval."""
+    internal = check_mesh_internals(cmd)
+    if internal:
+        return internal
     for seg in re.split(r"&&|\|\||;|\n", cmd):
         if _RM_RF.search(seg):
             m = _RM.match(seg.strip())

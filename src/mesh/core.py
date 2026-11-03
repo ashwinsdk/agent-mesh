@@ -81,6 +81,41 @@ def set_toml_section(path, section: str, values: dict) -> None:
     new = rx.sub(body, text, count=1) if rx.search(text) else text.rstrip("\n") + "\n\n" + body
     from .db import atomic_write
     atomic_write(path, new)
+    _record_good(path)
+
+
+def _record_good(path) -> None:
+    """Remember the last config mesh itself wrote (hash + copy) so out-of-band edits can be detected and compared."""
+    import hashlib, shutil
+    try:
+        d = path.parent / "runtime"
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "mesh.toml.sha").write_text(hashlib.sha256(path.read_bytes()).hexdigest())
+        shutil.copy2(path, d / "mesh.toml.last-good")
+    except OSError:
+        pass
+
+
+def config_drift(paths) -> dict | None:
+    import hashlib, tomllib
+    d = paths.runtime
+    sha_f, good_f = d / "mesh.toml.sha", d / "mesh.toml.last-good"
+    if not sha_f.exists() or not paths.config.exists():
+        return None
+    cur = hashlib.sha256(paths.config.read_bytes()).hexdigest()
+    if cur == sha_f.read_text().strip():
+        return None
+    changes = []
+    try:
+        old, new = tomllib.loads(good_f.read_text()), tomllib.loads(paths.config.read_text())
+        for sec in sorted(set(old) | set(new)):
+            for k in sorted(set(old.get(sec, {}) if isinstance(old.get(sec), dict) else {}) | set(new.get(sec, {}) if isinstance(new.get(sec), dict) else {})):
+                a, b = (old.get(sec) or {}).get(k), (new.get(sec) or {}).get(k)
+                if a != b:
+                    changes.append(f"{sec}.{k}: {a!r} -> {b!r}")
+    except Exception:
+        changes = ["(could not compare)"]
+    return {"sha": cur, "changes": changes or ["(formatting only)"], "backup": str(good_f)}
 
 
 def heartbeat(db: DB, sid: str) -> None:
