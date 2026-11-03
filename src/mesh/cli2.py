@@ -65,6 +65,7 @@ def add_parsers(sub):
     x = sub.add_parser("limits", help="daily/weekly usage limits as reported by antigravity (`agy -p /usage`) and copilot (`copilot -p /usage`)")
     x.add_argument("--refresh", action="store_true", help="ask the CLIs now (they run their own /usage; no model turn)")
     x.add_argument("--out", help="directory to save the raw CLI output (send it to the maintainer if parsing looks wrong)")
+    x.add_argument("--copilot", action="store_true", help="also run `copilot -p /usage`: this starts a real model session (~0.7 AIU) and reports session usage only")
     x = sub.add_parser("conduct", help="run the conductor (single instance per project)"); x.add_argument("--daemon", action="store_true")
     x.add_argument("--status", action="store_true"); x.add_argument("--stop", action="store_true")
     x = sub.add_parser("start", help="headless: submit a project prompt to the conductor"); x.add_argument("prompt")
@@ -385,7 +386,7 @@ def cmd_report(db, a, actor):
 def cmd_limits(db, a, actor):
     from . import limits as _lim, snapshot
     if a.refresh:
-        for cli in ("antigravity", "copilot"):
+        for cli in ("antigravity",) + (("copilot",) if a.copilot else ()):
             r = _lim.refresh(db, cli)
             print(f"== {cli}: {'ok' if r['ok'] else 'FAILED: ' + str(r['error'])}   command: {r['command'] or 'n/a'}")
             if a.out:
@@ -393,6 +394,9 @@ def cmd_limits(db, a, actor):
                 (out / f"{cli}.usage.raw.txt").write_text(r["raw"])
     snap = snapshot.build(db.paths)["limits"]
     for cli in ("antigravity", "copilot", "claude"):
+        if cli == "copilot" and not snap[cli]["checked"]:
+            print("\ncopilot\n  plan limits are not exposed to headless runs; `--copilot` runs its /usage (a real ~0.7 AIU model session, session usage only)")
+            continue
         L = snap[cli]
         print(f"\n{cli}" + (f"   (checked {int(L['age'])}s ago)" if L["age"] is not None else "   (not checked yet: run `mesh limits --refresh`)"))
         if L["windows"]:
@@ -431,6 +435,11 @@ def cmd_start(db, a, actor):
         print(f"{e}\nCommitting mesh-generated files now.")
         cmd_commit_config(db, a, actor)
     conductor.start_daemon(db.paths)
+    if not load_config(db.paths)["app"].get("cli"):
+        from . import core as _core
+        pick = a.cli or next((n for n in ("claude", "copilot", "antigravity") if adapters.ADAPTERS[n](db.paths).available()), None)
+        if pick:
+            _core.set_toml_section(db.paths.config, "app", {"cli": pick})
     cid = runs.enqueue(db, "submit_prompt", {"prompt": a.prompt, "cli": a.cli}, "human")
     for _ in range(100):
         r = db.one("SELECT * FROM commands WHERE id=?", (cid,))

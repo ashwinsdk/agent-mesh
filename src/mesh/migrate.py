@@ -62,7 +62,7 @@ def _cols(conn, table: str) -> set[str]:
     return {r[1] for r in conn.execute(f"PRAGMA table_info({table})").fetchall()}
 
 
-def migrate(conn, target: int = 5) -> None:
+def migrate(conn, target: int = 6) -> None:
     cur = int((conn.execute("SELECT value FROM meta WHERE key='schema_version'").fetchone() or ["1"])[0])
     if cur >= target:
         return
@@ -98,6 +98,10 @@ def migrate(conn, target: int = 5) -> None:
                 if "hidden" not in _cols(conn, table):
                     conn.execute(f"ALTER TABLE {table} ADD COLUMN hidden TEXT")
             conn.execute("UPDATE meta SET value='5' WHERE key='schema_version'")
+        if cur < 6:
+            if "grp" not in _cols(conn, "limits"):  # model group a limit applies to (Antigravity: Gemini vs Claude/GPT)
+                conn.execute("ALTER TABLE limits ADD COLUMN grp TEXT")
+            conn.execute("UPDATE meta SET value='6' WHERE key='schema_version'")
         conn.execute("COMMIT")
     except BaseException:
         conn.execute("ROLLBACK")

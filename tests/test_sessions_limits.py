@@ -188,9 +188,11 @@ class TestLimitCollection(WorkerCase):
         runs.enqueue(cond.db, "refresh_limits", {}, "human")
         cond.tick()
         self.assertTrue(core.load_config(paths)["limits"]["enabled"])
-        self.assertTrue(wait_for(lambda: (cond.tick() or True) and snapshot.build(paths)["limits"]["copilot"]["windows"], 30))
-        self.assertTrue(snapshot.build(paths)["limits"]["antigravity"]["windows"])
+        self.assertTrue(wait_for(lambda: (cond.tick() or True) and snapshot.build(paths)["limits"]["antigravity"]["windows"], 30))
         self.assertEqual(len([k for k in cond.futs if k[0] == "limits"]), 0)  # jobs harvested even with no active run
+        self.assertIsNone(snapshot.build(paths)["limits"]["copilot"]["checked"])  # Copilot's /usage costs a model session: never automatic
+        runs.enqueue(cond.db, "refresh_limits", {"copilot": True}, "human"); cond.tick()
+        self.assertTrue(wait_for(lambda: (cond.tick() or True) and snapshot.build(paths)["limits"]["copilot"]["checked"], 30))
 
 
 if __name__ == "__main__":
@@ -205,3 +207,61 @@ class TestLimitsCli(WorkerCase):
         self.assertEqual(out.returncode, 0, out.stderr)
         self.assertIn("daily · 62% left · resets in 5h", out.stdout); self.assertIn("weekly · 88% left", out.stdout)
         self.assertTrue((r.root / "raw" / "antigravity.usage.raw.txt").exists())
+
+
+FIX = __import__("pathlib").Path(__file__).resolve().parent / "fixtures" / "limits"
+
+
+class TestRealUsageCaptures(unittest.TestCase):
+    """Real output captured from `agy -p /usage --output-format json` and `copilot -p /usage` on 2026-11-03."""
+
+    def test_antigravity_real_usage_groups_windows_and_resets(self):
+        rows = limits.parse((FIX / "antigravity_usage.json").read_text())
+        got = {(r["group"], r["window"]): r for r in rows}
+        self.assertEqual(set(got), {("Gemini Models", "weekly"), ("Gemini Models", "5-hour"), ("Claude and GPT models", "weekly"), ("Claude and GPT models", "5-hour")})
+        self.assertAlmostEqual(got[("Gemini Models", "weekly")]["remaining_pct"], 44.98, places=1)
+        self.assertAlmostEqual(got[("Gemini Models", "weekly")]["used_pct"], 55.02, places=1)
+        self.assertEqual(got[("Claude and GPT models", "5-hour")]["remaining_pct"], 100.0)
+        self.assertTrue(all(r["resets_ts"] for r in rows))
+        self.assertEqual(len(rows), 4)  # the same numbers also appear in the text field: not counted twice
+        self.assertEqual(limits.short_group("Claude and GPT models"), "Claude/GPT"); self.assertEqual(limits.short_group("Gemini Models"), "Gemini")
+
+    def test_five_hour_wording_and_relative_reset(self):
+        self.assertEqual(limits.normalise_window("Five Hour Limit Remaining"), "5-hour")
+        self.assertEqual(limits.normalise_window("5h"), "5-hour")
+        import time as _t
+        self.assertEqual(limits.rel(_t.time() + 4 * 86400 + 3600 + 30), "4d 1h")
+        self.assertEqual(limits.rel(_t.time() + 4 * 3600 + 34 * 60 + 30), "4h 34m")
+        self.assertEqual(limits.rel(_t.time() + 12 * 60 + 5), "12m"); self.assertEqual(limits.rel(_t.time() - 5), "now"); self.assertIsNone(limits.rel(None))
+
+    def test_copilot_real_usage_is_session_usage_not_limits(self):
+        self.assertEqual(limits.parse((FIX / "copilot_usage.md").read_text()), [])  # "AI usage: 0.69 AIU" must not be misread as a limit
+
+    def test_snapshot_carries_group_and_ts_and_ui_lines_are_grouped(self):
+        import tempfile, time as _t
+        from helpers import Repo
+        r = Repo(); db = r.db(); paths = Paths(r.root)
+        for w in limits.parse((FIX / "antigravity_usage.json").read_text()):
+            with db.tx() as c:
+                c.execute("INSERT INTO limits(ts,cli,window,used_pct,remaining_pct,resets_text,resets_ts,detail,source,grp) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          (_t.time(), "antigravity", w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"], w["resets_ts"], w["detail"], "x", w["group"]))
+        with db.tx() as c:
+            c.execute("INSERT INTO limit_raw(cli,ts,ok,raw,error,command) VALUES('antigravity',?,1,'r',NULL,'agy -p /usage')", (_t.time(),))
+        snap = snapshot.build(paths)
+        wins = snap["limits"]["antigravity"]["windows"]
+        self.assertEqual({(w["group"], w["window"]) for w in wins}, {("Gemini Models", "weekly"), ("Gemini Models", "5-hour"), ("Claude and GPT models", "weekly"), ("Claude and GPT models", "5-hour")})
+        r.cleanup()
+
+
+class TestStartRecordsCli(WorkerCase):
+    def test_mesh_start_remembers_the_cli_so_the_app_does_not_show_the_wizard_again(self):
+        import json as _j
+        from mesh.app import setup
+        r = self.proj(); os.environ["MESH_ROOT"] = str(r.root)
+        self.assertEqual(core.load_config(Paths(r.root))["app"]["cli"], "")
+        os.environ["FAKE_PLAN"] = _j.dumps({"summary": "s", "epics": [{"title": "e", "tasks": [{"key": "a", "title": "a", "description": "d", "agent": "backend", "files": ["a/**"], "acceptance": "a"}]}]})
+        out = r.mesh("start", "x", "--cli", "claude", "--yes")
+        self.assertEqual(out.returncode, 0, out.stderr)
+        self.assertEqual(core.load_config(Paths(r.root))["app"]["cli"], "claude")
+        self.assertFalse(setup.needs_setup(Paths(r.root)))
+        conductor.stop_daemon(Paths(r.root))

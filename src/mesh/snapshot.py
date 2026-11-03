@@ -230,7 +230,7 @@ def build(paths: Paths) -> dict:
             limits[cli] = {"enabled": lim_cfg, "checked": raw[0]["ts"] if raw else None, "age": (t_now - raw[0]["ts"]) if raw else None,
                            "ok": bool(raw[0]["ok"]) if raw else None, "error": raw[0]["error"] if raw else None,
                            "raw": raw[0]["raw"] if raw else "", "command": raw[0]["command"] if raw else "",
-                           "windows": [{"window": w["window"], "used_pct": w["used_pct"], "remaining_pct": w["remaining_pct"], "resets_text": w["resets_text"], "detail": w["detail"]} for w in wins]}
+                           "windows": [{"group": w.get("grp"), "window": w["window"], "used_pct": w["used_pct"], "remaining_pct": w["remaining_pct"], "resets_text": w["resets_text"], "resets_ts": w["resets_ts"], "detail": w["detail"]} for w in wins]}
         q = _rows(c, "SELECT * FROM usage WHERE five_hour_pct IS NOT NULL ORDER BY ts DESC LIMIT 1")
         limits["claude"] = {"enabled": True, "checked": q[0]["ts"] if q else None, "age": (t_now - q[0]["ts"]) if q else None, "ok": bool(q), "error": None if q else "no statusline data yet (interactive Claude sessions only)",
                             "raw": "", "command": "claude statusline rate_limits",

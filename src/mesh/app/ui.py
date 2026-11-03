@@ -22,7 +22,7 @@ from textual.suggester import SuggestFromList
 from textual.theme import Theme
 from textual.widgets import Button, Checkbox, DataTable, Footer, Input, Label, RichLog, Select, Static
 
-from .. import conductor, core, feed, runs, snapshot, streams, tasks as tasks_mod, verify
+from .. import conductor, core, feed, limits as limits_mod, runs, snapshot, streams, tasks as tasks_mod, verify
 from ..db import DB, MeshError, Paths
 from . import commands, setup
 
@@ -155,37 +155,51 @@ def _pct_bar(remaining: float, w: int = 8) -> str:
 
 
 def limit_lines(snap: dict, clis: list[str]) -> list[Text]:
-    """Daily / weekly / other windows exactly as each CLI reports them; honest placeholders when it has not (yet)."""
+    """Usage-limit windows exactly as each CLI reports them (Antigravity: per model group, 5-hour and weekly), with honest
+    placeholders when a CLI has none to give. Nothing here is estimated."""
     out: list[Text] = []
     lim = snap.get("limits", {})
-    order = {"daily": 0, "5-hour": 1, "weekly": 2, "monthly": 3}
+    order = {"5-hour": 0, "daily": 1, "weekly": 2, "monthly": 3}
     for cli in clis:
         L = lim.get(cli)
         if L is None:
             continue
         if L["windows"]:
-            for w in sorted(L["windows"], key=lambda w: order.get(w["window"], 9)):
+            for w in sorted(L["windows"], key=lambda w: (w.get("group") or "", order.get(w["window"], 9))):
                 t = Text("  ")
-                t.append(f"{w['window']:<8}", style=BLUE)
+                grp = limits_mod.short_group(w.get("group"))
+                if grp:
+                    t.append(f"{grp:<11}", style=PURPLE)
+                t.append(f"{w['window']:<7}", style=BLUE)
                 if w["remaining_pct"] is not None:
                     col = RED if w["remaining_pct"] < 10 else AMBER if w["remaining_pct"] < 30 else GREEN
-                    t.append(_pct_bar(w["remaining_pct"]) + f" {w['remaining_pct']:.0f}% left", style=col)
+                    t.append(_pct_bar(w["remaining_pct"]) + f" {w['remaining_pct']:>3.0f}% left", style=col)
                 else:
                     t.append(short(w.get("detail") or "reported", 34), style=TEXT)
-                if w.get("resets_text"):
+                r = limits_mod.rel(w.get("resets_ts"))
+                if r:
+                    t.append(f"  resets in {r}", style=MUTED)
+                elif w.get("resets_text"):
                     t.append(f"  resets {w['resets_text']}", style=MUTED)
                 out.append(t)
             if L["age"] is not None and L["age"] > 1800:
                 out.append(Text(f"  (as of {dur(L['age'])} ago; /limits to refresh)", style=MUTED))
         elif cli == "claude":
             continue  # Claude's windows come from its statusline; nothing to explain when absent
+        elif cli == "copilot":
+            if L["checked"] is None:
+                out.append(Text("  plan limits: not exposed to headless runs", style=MUTED))
+            elif L["ok"]:
+                out.append(Text("  reports session usage only (no plan limits headlessly)", style=MUTED))
+            else:
+                out.append(Text(f"  unavailable: {short(L['error'] or 'no answer', 50)}", style=AMBER))
         elif L["checked"] is None:
             out.append(Text("  limits: not fetched · type /limits", style=MUTED))
         elif not L["ok"]:
             out.append(Text(f"  limits unavailable: {short(L['error'] or 'the CLI did not answer', 60)}", style=AMBER))
         else:
             first = next((l.strip() for l in (L["raw"] or "").splitlines() if l.strip()), "")
-            out.append(Text(f"  the CLI reported no daily/weekly figures. Its reply: {short(first, 70)}", style=MUTED))
+            out.append(Text(f"  no limit figures reported. Its reply: {short(first, 60)}", style=MUTED))
     return out
 
 
@@ -321,7 +335,10 @@ def render_usage(snap):
             lt.append(l).append("\n")
         if cli == "claude" and not L["windows"]:
             lt.append("  no 5-hour / weekly figures yet (Claude reports them to interactive sessions' statusline)\n", style=MUTED)
-        if L["raw"] and not L["windows"]:
+        if cli == "copilot":
+            lt.append("  Copilot exposes plan limits only in its interactive footer. mesh shows the AIU its own sessions used (see below);\n"
+                      "  `/limits copilot` runs its /usage, which starts a real model session (~0.7 AIU) and reports session usage only.\n", style=MUTED)
+        if L["raw"] and not L["windows"] and cli != "copilot":
             lt.append("  CLI output:\n", style=MUTED)
             for ln in L["raw"].splitlines()[:14]:
                 lt.append(f"    {ln[:110]}\n", style=MUTED)

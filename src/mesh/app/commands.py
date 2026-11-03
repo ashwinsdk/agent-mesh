@@ -24,7 +24,7 @@ COMMANDS = [
     ("/retry", "<task>", "re-queue a failed or blocked task"),
     ("/kill", "<session|#>", "stop a session (live, idle or done) and remove it from the list"),
     ("/clear", "<session|#|done|idle|all>", "remove finished or idle sessions from the list (never live ones)"),
-    ("/limits", "", "fetch daily/weekly usage limits from Copilot and Antigravity (their own /usage)"),
+    ("/limits", "[copilot]", "fetch Antigravity's 5-hour and weekly limits (free); `/limits copilot` also runs Copilot's /usage (~0.7 AIU)"),
     ("/say", "<worker> <text>", "send a message to a running worker"),
     ("/cli", "<claude|copilot|antigravity>", "switch the orchestrator's CLI"),
     ("/usage", "", "tokens, cost and limits per CLI / model / agent / task"),
@@ -162,8 +162,11 @@ def execute(paths: Paths, snap: dict, text: str) -> Reply:
             q("clear_session", scope=wid)
             return Reply("message", f"Clearing {wid}…", "ok")
         if cmd == "/limits":
+            if arg.strip().lower() == "copilot":
+                q("refresh_limits", copilot=True)
+                return Reply("message", "Asking Antigravity for its limits and running Copilot's /usage (a real model session, about 0.7 AIU; session usage only).", "warn")
             q("refresh_limits")
-            return Reply("message", "Asking Antigravity and Copilot for their usage limits (their own `/usage`; no model run). Results appear in Usage.", "info")
+            return Reply("message", "Asking Antigravity for its 5-hour and weekly limits (its own /usage: zero tokens). Results appear in Usage.", "info")
         if cmd == "/say":
             tok, _, msg = arg.partition(" ")
             wid = resolve(snap, tok, "worker")

@@ -293,7 +293,7 @@ class TestRevamp(AppCase):
                               (time.time(), cli, win, 100 - rem, rem, reset, "", "agy -p /usage"))
                     c.execute("INSERT INTO limit_raw(cli,ts,ok,raw,error,command) VALUES(?,?,1,'raw',NULL,'x') ON CONFLICT(cli) DO UPDATE SET ts=excluded.ts", (cli, time.time()))
             self.assertTrue(await until(pilot, lambda: "62% left" in app.usage_str, 10), app.usage_str)
-            for needle in ("daily", "weekly", "88% left", "resets in 5h", "resets Mon 09:00", "8% left"):
+            for needle in ("daily", "weekly", "88% left", "resets Mon 09:00", "8% left"):
                 self.assertIn(needle, app.usage_str)
             app.query_one("#prompt").value = "/limits"
             await pilot.press("enter")
@@ -346,3 +346,26 @@ class TestPolish(AppCase):
             self.assertTrue(await until(pilot, lambda: any(a[2].plain == "Orchestrator" and a[5].plain == "thinking" for a in app.agent_view), 40), app.agent_view)
             self.assertFalse(any("interactive" in a[3].plain for a in app.agent_view))  # nothing besides the orchestrator while it plans
             self.assertIn("planning", app.top_str)
+
+
+@unittest.skipUnless(HAVE, "textual not installed")
+class TestRealLimitsDisplay(AppCase):
+    async def test_antigravity_groups_5hour_weekly_and_copilot_honesty(self):
+        from mesh import limits as lim
+        r = self.project(); db = r.db()
+        fx = Path(__file__).resolve().parent / "fixtures" / "limits"
+        with db.tx() as c:
+            for w in lim.parse((fx / "antigravity_usage.json").read_text()):
+                c.execute("INSERT INTO limits(ts,cli,window,used_pct,remaining_pct,resets_text,resets_ts,detail,source,grp) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                          (time.time(), "antigravity", w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"], time.time() + 3600 * 5, w["detail"], "x", w["group"]))
+            c.execute("INSERT INTO limit_raw(cli,ts,ok,raw,error,command) VALUES('antigravity',?,1,'r',NULL,'agy -p /usage')", (time.time(),))
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(170, 50)) as pilot:
+            self.assertTrue(await until(pilot, lambda: "Gemini" in app.usage_str, 15), app.usage_str)
+            for needle in ("Gemini", "Claude/GPT", "5-hour", "weekly", "45% left", "88% left", "100% left", "resets in"):
+                self.assertIn(needle, app.usage_str)
+            self.assertIn("not exposed to headless runs", app.usage_str)  # Copilot: honest, and not auto-fetched (it costs a model session)
+            app.query_one("#prompt").value = "/limits copilot"
+            await pilot.press("enter")
+            self.assertTrue(await until(pilot, lambda: db.q("SELECT 1 FROM commands WHERE kind='refresh_limits' AND payload LIKE '%copilot%'"), 10))
+            self.assertTrue(await until(pilot, lambda: any("0.7 AIU" in l for l in app.activity_lines), 10))  # the user is told it costs credits

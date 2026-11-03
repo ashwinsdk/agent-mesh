@@ -139,7 +139,7 @@ class TestCliBasics(MeshCase):
         v = r.mesh("--version")
         self.assertEqual(v.returncode, 0); self.assertRegex(v.stdout, r"agent-mesh \d+\.\d+\.\d+")
         d = r.mesh("doctor")
-        self.assertIn("== Health", d.stdout); self.assertIn("database schema v5", d.stdout); self.assertIn("mesh 0.", d.stdout)
+        self.assertIn("== Health", d.stdout); self.assertRegex(d.stdout, r"database schema v\d+"); self.assertIn("mesh 0.", d.stdout)
 
 
 if __name__ == "__main__":

@@ -25,7 +25,7 @@ WINDOW_WORDS = [
     ("daily", re.compile(r"\b(daily|per day|each day|24[- ]?h(?:ou)?rs?|today)\b", re.I)),
     ("weekly", re.compile(r"\b(weekly|per week|each week|7[- ]?day|this week)\b", re.I)),
     ("monthly", re.compile(r"\b(monthly|per month|each month|this month|billing (?:period|cycle))\b", re.I)),
-    ("5-hour", re.compile(r"\b5[- ]?h(?:ou)?rs?\b", re.I)),
+    ("5-hour", re.compile(r"\b(?:5|five)[- ]?h(?:(?:ou)?rs?)?\b", re.I)),
     ("hourly", re.compile(r"\b(hourly|per hour)\b", re.I)),
     ("session", re.compile(r"\bsession\b", re.I)),
 ]
@@ -64,6 +64,36 @@ def _ts(v):
         except ValueError:
             return None, v.strip()[:60]
     return None, None
+
+
+WINDOW_NAMES = {"5h": "5-hour", "5-hour": "5-hour", "five_hour": "5-hour", "weekly": "weekly", "daily": "daily", "monthly": "monthly", "hourly": "hourly"}
+
+
+def _from_groups(doc, out: list) -> None:
+    """Antigravity's real `/usage` JSON (verified 2026-11-03): command.data.groups[].buckets[] with window, remaining_fraction and
+    an ISO reset_time in UTC, one group per model family (Gemini vs Claude/GPT)."""
+    def find(o):
+        if isinstance(o, dict):
+            g = o.get("groups")
+            if isinstance(g, list) and g and isinstance(g[0], dict) and isinstance(g[0].get("buckets"), list):
+                yield g
+            for v in o.values():
+                yield from find(v)
+        elif isinstance(o, list):
+            for v in o:
+                yield from find(v)
+    for groups in find(doc):
+        for g in groups:
+            for b in g.get("buckets") or []:
+                rf = _num(b.get("remaining_fraction"))
+                if rf is None:
+                    continue
+                rem = rf * 100.0 if 0.0 <= rf <= 1.0 else rf
+                w = str(b.get("window") or "").lower()
+                win = WINDOW_NAMES.get(w) or normalise_window(b.get("name"), "")
+                rts, rtxt = _ts(b.get("reset_time"))
+                out.append({"group": g.get("name"), "window": win, "used_pct": max(0.0, 100.0 - rem), "remaining_pct": rem,
+                            "resets_text": rtxt, "resets_ts": rts, "detail": (b.get("description") or "")[:200]})
 
 
 def _num(v):
@@ -139,6 +169,10 @@ def parse(raw: str) -> list[dict]:
                 except ValueError:
                     pass
     for d in docs:
+        _from_groups(d, out)
+    if out:
+        return out  # structured form found: the same numbers also appear in the human text, do not parse them twice
+    for d in docs:
         _walk(d, None, out)
         # JSON events often carry the human text in a string field; parse that too if no structure matched
         if not out:
@@ -148,7 +182,7 @@ def parse(raw: str) -> list[dict]:
         out = _parse_text(raw)
     seen, dedup = set(), []
     for w in out:
-        k = (w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"])
+        k = (w.get("group"), w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"])
         if k not in seen:
             seen.add(k); dedup.append(w)
     return dedup
@@ -199,23 +233,46 @@ def refresh(db: DB, cli: str, timeout: float = 60) -> dict:
     with db.tx() as c:
         c.execute("DELETE FROM limits WHERE cli=?", (cli,))
         for w in wins:
-            c.execute("INSERT INTO limits(ts,cli,window,used_pct,remaining_pct,resets_text,resets_ts,detail,source) VALUES(?,?,?,?,?,?,?,?,?)",
-                      (t, cli, w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"], w["resets_ts"], w["detail"], cmd))
+            c.execute("INSERT INTO limits(ts,cli,window,used_pct,remaining_pct,resets_text,resets_ts,detail,source,grp) VALUES(?,?,?,?,?,?,?,?,?,?)",
+                      (t, cli, w["window"], w["used_pct"], w["remaining_pct"], w["resets_text"], w["resets_ts"], w["detail"], cmd, w.get("group")))
         c.execute("INSERT INTO limit_raw(cli,ts,ok,raw,error,command) VALUES(?,?,?,?,?,?) ON CONFLICT(cli) DO UPDATE SET ts=excluded.ts, ok=excluded.ok, raw=excluded.raw, error=excluded.error, command=excluded.command",
                   (cli, t, 1 if ok else 0, raw, err, cmd))
         db.event("limits", "limits.refreshed", None, {"cli": cli, "ok": ok, "windows": len(wins)}, conn=c)
     return {"cli": cli, "ok": ok, "error": err, "windows": wins, "raw": raw, "command": cmd}
 
 
+def rel(ts: float | None) -> str | None:
+    """'4d 1h' / '4h 34m' / '12m' until a reset the CLI reported (computed from its own timestamp)."""
+    if not ts:
+        return None
+    d = int(ts - now())
+    if d <= 0:
+        return "now"
+    days, rem = divmod(d, 86400)
+    hrs, rem = divmod(rem, 3600)
+    mins = rem // 60
+    return f"{days}d {hrs}h" if days else f"{hrs}h {mins}m" if hrs else f"{mins}m"
+
+
+def short_group(name: str | None) -> str:
+    if not name:
+        return ""
+    n = re.sub(r"\bmodels?\b", "", name, flags=re.I).replace(" and ", "/").strip()
+    return n.replace("Claude/GPT", "Claude/GPT")[:14]
+
+
 def label(w: dict) -> str:
     """One readable line for a window, never inventing a field the CLI did not report."""
-    parts = [w["window"]]
+    parts = ([short_group(w.get("group"))] if w.get("group") else []) + [w["window"]]
     if w.get("remaining_pct") is not None:
         parts.append(f"{w['remaining_pct']:.0f}% left")
     elif w.get("used_pct") is not None:
         parts.append(f"{w['used_pct']:.0f}% used")
     else:
         parts.append(w.get("detail") or "reported")
-    if w.get("resets_text"):
+    r = rel(w.get("resets_ts"))
+    if r:
+        parts.append(f"resets in {r}" + (f" ({w['resets_text']})" if w.get("resets_text") else ""))
+    elif w.get("resets_text"):
         parts.append(f"resets {w['resets_text']}")
     return " · ".join(parts)

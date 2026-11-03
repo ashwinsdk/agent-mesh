@@ -175,17 +175,18 @@ class Conductor:
         self.started = now()
         self._idle_since = now()
 
-    def limits_refresh(self, force: bool = False) -> str:
-        """Ask copilot/antigravity for their own /usage (background threads). The first explicit refresh opts the project in to periodic ones."""
+    def limits_refresh(self, force: bool = False, copilot: bool = False) -> str:
+        """Ask Antigravity for its own /usage (free: zero tokens, verified) in a background thread. The first explicit refresh opts the project in
+        to periodic ones. Copilot's `-p /usage` runs a real model session (~0.7 AIU, verified), so it only ever runs on explicit request."""
         if force and not self.cfg()["limits"]["enabled"]:
             core.set_toml_section(self.paths.config, "limits", {"enabled": True, "refresh_seconds": self.cfg()["limits"]["refresh_seconds"]})
         self.last_limits = now()
         started = []
-        for cli in ("antigravity", "copilot"):
+        for cli in ("antigravity",) + (("copilot",) if copilot else ()):
             if adapters.ADAPTERS[cli](self.paths).available() and ("limits", cli) not in self.futs:
                 self.futs[("limits", cli)] = (self.pool.submit(_limits_job, self.paths, cli), {})
                 started.append(cli)
-        return "asked " + ", ".join(started) + " for their usage limits" if started else "no CLI to ask (antigravity/copilot not installed)"
+        return "asked " + ", ".join(started) + " for usage limits" if started else "no CLI to ask (antigravity not installed)"
 
     # -- plumbing
     def close(self):
@@ -265,6 +266,8 @@ class Conductor:
             cli = p.get("cli") or cfg["app"].get("cli") or next((n for n in ("claude", "copilot", "antigravity") if adapters.ADAPTERS[n](db.paths).available()), None)
             if not cli:
                 raise MeshError("no supported CLI found on this machine")
+            if not cfg["app"].get("cli"):
+                core.set_toml_section(self.paths.config, "app", {"cli": cli})  # remember it so the app does not ask again
             rid = runs.create_run(db, text, cli, actor)
             core.register_session(db, cli, "orchestrator", None, os.getpid(), None, role="orchestrator", session_id=f"orch-{rid}")
             return f"run {rid} started with {cli}"
@@ -277,7 +280,7 @@ class Conductor:
             n = core.clear_sessions(db, p.get("scope") or p.get("id"), actor)
             return f"cleared {n} session(s)"
         if kind == "refresh_limits":
-            return self.limits_refresh(force=True)
+            return self.limits_refresh(force=True, copilot=bool(p.get("copilot")))
         if kind == "promote":
             return gitflow.promote(db) or "promoted"
         if kind in ("approve_item", "reject_item"):
