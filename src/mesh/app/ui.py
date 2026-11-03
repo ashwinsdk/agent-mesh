@@ -762,6 +762,7 @@ class MeshApp(App):
         t = self.query_one("#tasks", DataTable); t.add_column("", width=1); t.add_column("task", width=27); t.add_column("status", width=12); t.add_column("time", width=6)
         self.query_one("#prompt", Input).focus()
         if not setup.needs_setup(self.paths):
+            self.show_logo()
             self.say("Describe what you want built. Type / for commands. Tab moves between panes.", "info")
         self.refresh_data()
         self.set_interval(1.0, self.refresh_data)
@@ -804,6 +805,18 @@ class MeshApp(App):
         finally:
             db.close()
         self.start_conductor()
+
+    def show_logo(self) -> None:
+        """The mark in the Activity pane on first view, when the terminal is tall enough not to push content away."""
+        if self.size.height < 28:
+            return
+        from .logo import LOGO_SMALL
+        log = self.query_one("#activity", RichLog)
+        log.write(Text(""))
+        for line in LOGO_SMALL.splitlines():
+            log.write(Text("   " + line, style=TEXT))
+        log.write(Text("   agent-mesh", style=f"bold {PURPLE}"))
+        log.write(Text(""))
 
     def say(self, text: str, level: str = "info") -> None:
         if not text:

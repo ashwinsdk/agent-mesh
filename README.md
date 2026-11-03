@@ -1,3 +1,5 @@
+<p align="center"><img src="logo.png" alt="agent-mesh" width="160"></p>
+
 # agent-mesh
 
 Turns any git repository into a coordinated multi-agent workspace for **Claude Code, Antigravity (`agy`) and GitHub Copilot CLI** (and anything that can read `AGENTS.md` / run shell commands). Shared tasks, memory, messages, file locks, checkpoints and honest usage tracking live in the repo (`.mesh/`), not in any CLI's chat history. Python 3.11+ stdlib only; macOS/Linux.
