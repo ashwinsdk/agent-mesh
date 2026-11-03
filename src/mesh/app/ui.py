@@ -771,9 +771,19 @@ class MeshApp(App):
             self.start_conductor()
         self.on_resize()
 
-    def on_resize(self, *_):
+    def on_resize(self, event=None):
+        width = getattr(getattr(event, "size", None), "width", None) or self.size.width
+        self._apply_width(width)
+        # a quick shrink-then-grow can deliver the event before the final size is settled: re-check shortly after
+        self.set_timer(0.3, lambda: self._apply_width(self.size.width))
+
+    def _apply_width(self, width: int) -> None:
         try:
-            self.query_one("#right").display = self.size.width >= 100
+            right = self.query_one("#right")
+            want = width >= 100
+            if right.display != want:
+                right.display = want
+                self.refresh(layout=True)
         except Exception:
             pass
 

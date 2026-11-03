@@ -524,6 +524,15 @@ class PtyApp:
                 return True
         return needle in self.text()
 
+    def until_top(self, word: str, timeout=30.0) -> bool:
+        """Wait for a word in the top status bar only (not anywhere on screen: 'completed' in the Tasks pane is not the run completing)."""
+        end = time.time() + timeout
+        while time.time() < end:
+            self.pump(0.3)
+            if word in self.text().splitlines()[0]:
+                return True
+        return word in self.text().splitlines()[0]
+
     def resize(self, rows, cols):
         self.rows, self.cols = rows, cols
         import pyte
@@ -563,13 +572,14 @@ def c17():
     check("the strip says how to act (Tab, then a)", "Tab" in app.text() or "approve" in app.text())
     app.send(b"\t"); app.pump(0.8)
     app.send(b"a")
-    ok = app.until("complete", 150)
+    ok = app.until_top("complete", 150)
     check("the run completes (top bar shows it)", ok, app.text()[:900])
+    app.until("Promote", 20)
     t = app.text()
     check("Sessions pane lists the finished workers as done", "done" in t and "Sessions" in t, t[:1500])
     check("Tasks pane shows completed tasks (tick marks)", t.count("✓") >= 3, t[:1500])
     check("Activity narrates the run in plain language", all(x in t for x in ("approved", "merged")) or "Run complete" in t, t[:1500])
-    app.pump(2.0); t = app.text()
+    t = app.text()
     check("promote is offered, never automatic", "Promote" in t or "promote" in t, t[-1200:])
     check("input bar and footer are both on screen at the bottom", any("╰" in l for l in t.splitlines()[-4:]) and "Quit" in t.splitlines()[-1], "\n".join(t.splitlines()[-5:]))
     code = app.quit()
@@ -577,7 +587,7 @@ def c17():
     check("no traceback anywhere in the session", b"Traceback" not in app.raw)
     # reopen: state is re-attached
     app2 = PtyApp(d, extra_env=env)
-    check("re-opening shows the finished run", app2.until("complete", 25), app2.text()[:400])
+    check("re-opening shows the finished run", app2.until_top("complete", 25), app2.text()[:400])
     app2.quit(); mesh("conduct", "--stop", cwd=d)
 
 
@@ -594,8 +604,8 @@ def c18():
     check("at 80x24 the input bar is intact (top and bottom border) and the footer shows", "Describe what you want built" in t and "╰" in "\n".join(t.splitlines()[-4:]) and "Quit" in t.splitlines()[-1], "\n".join(t.splitlines()[-6:]))
     app.resize(14, 60); app.pump(1.5)
     check("a very small terminal (60x14) survives", b"Traceback" not in app.raw and app.text().strip() != "")
-    app.resize(40, 160); app.pump(1.5)
-    check("growing back restores the panes", "Sessions" in app.text() and "Tasks" in app.text(), app.text()[:500])
+    app.resize(40, 160); app.until("Tasks", 8); app.pump(1.0)
+    check("growing back restores the panes", "Sessions" in app.text() and "Tasks" in app.text(), app.text())
     check("still exits cleanly", app.quit() == 0 and b"Traceback" not in app.raw)
     mesh("conduct", "--stop", cwd=d)
 
