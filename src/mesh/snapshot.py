@@ -246,6 +246,7 @@ def build(paths: Paths) -> dict:
             "run": ({"id": run[0]["id"], "status": run[0]["status"], "prompt": run[0]["prompt"], "cli": run[0]["cli"], "summary": run[0]["summary"],
                      "error": run[0]["error"], "final_validation": run[0]["final_validation"], "brain_turns": run[0]["brain_turns"]} if run else None),
             "conductor": cond, "limits": limits,
+            "pending_commands": len(_rows(c, "SELECT id FROM commands WHERE status='pending' AND ts < ?", (t_now - 3,))),
             "attention": [{"id": a["id"], "kind": a["kind"], "subject": a["subject"], "title": a["title"], "detail": a["detail"], "ts": a["ts"]} for a in att],
             "project": {"name": cfg_name, "phase": phase, "progress": pct, "leaf_tasks": len(leaves), "completed_leaf": done, "workstreams": workstreams,
                         "milestones": {"completed": [w["title"] for w in workstreams if w["pct"] >= 1.0], "pending": [w["title"] for w in workstreams if w["pct"] < 1.0]},

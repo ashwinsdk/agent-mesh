@@ -359,3 +359,34 @@ class TestHaltDoesNotPoisonNewRuns(CondCase):
         self.assertTrue(self.run_until(lambda: self.status() in ("complete", "failed"), 150), self.status())
         self.assertEqual(self.status(), "complete")
         self.assertFalse(db.q("SELECT 1 FROM events WHERE type='dispatch.error'"))
+
+
+class TestStopStartRace(CondCase):
+    def test_REGRESSION_stop_waits_for_exit_so_a_following_command_gets_a_new_conductor(self):
+        r = self.proj(); os.environ["MESH_ROOT"] = str(r.root); paths = Paths(r.root)
+        self.addCleanup(conductor.stop_daemon, paths)
+        pid1 = conductor.start_daemon(paths)
+        self.assertTrue(wait_for(lambda: conductor.status(paths)["running"], 15))
+        self.assertTrue(conductor.stop_daemon(paths))
+        self.assertFalse(workers.pid_alive(pid1))  # returned only after the process was really gone
+        self.assertFalse(conductor.status(paths)["running"])
+        db = r.db(); runs.enqueue(db, "submit_prompt", {"prompt": "   "}, "human")
+        conductor.start_daemon(paths)  # what `mesh ctl` / the app do next
+        self.assertTrue(wait_for(lambda: db.one("SELECT status FROM commands")["status"] != "pending", 20), "command never picked up")
+        self.assertEqual(db.one("SELECT status FROM commands")["status"], "error")  # blank prompt rejected by the NEW conductor
+
+    def test_stale_heartbeat_means_not_running(self):
+        r = self.proj(); os.environ["MESH_ROOT"] = str(r.root); paths = Paths(r.root); db = r.db()
+        db.conn.execute("INSERT INTO conductor(id,pid,pid_start,started,heartbeat,state) VALUES(1,?,?,?,?,?)", (os.getpid(), workers.proc_start(os.getpid()), time.time(), time.time() - 12, "idle"))
+        self.assertFalse(conductor.status(paths)["running"])
+
+
+class TestHeartbeatIndependentOfTicks(CondCase):
+    def test_a_long_blocking_tick_does_not_make_a_healthy_conductor_look_dead(self):
+        r = self.proj(); os.environ["MESH_ROOT"] = str(r.root); paths = Paths(r.root)
+        c = conductor.Conductor(paths); self.addCleanup(c.close)
+        c.heartbeat(None); c.start_beat()
+        self.assertTrue(conductor.status(paths)["running"])
+        time.sleep(10)  # no tick at all for longer than the staleness limit (e.g. integrate running the project's tests)
+        self.assertTrue(conductor.status(paths)["running"], conductor.status(paths))
+        c.stop_flag = True

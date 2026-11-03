@@ -569,7 +569,8 @@ def c17():
     check("Sessions pane lists the finished workers as done", "done" in t and "Sessions" in t, t[:1500])
     check("Tasks pane shows completed tasks (tick marks)", t.count("✓") >= 3, t[:1500])
     check("Activity narrates the run in plain language", all(x in t for x in ("approved", "merged")) or "Run complete" in t, t[:1500])
-    check("promote is offered, never automatic", "Promote" in t or "promote" in t)
+    app.pump(2.0); t = app.text()
+    check("promote is offered, never automatic", "Promote" in t or "promote" in t, t[-1200:])
     check("input bar and footer are both on screen at the bottom", any("╰" in l for l in t.splitlines()[-4:]) and "Quit" in t.splitlines()[-1], "\n".join(t.splitlines()[-5:]))
     code = app.quit()
     check("Ctrl+Q leaves cleanly and the conductor keeps running", code == 0 and json.loads(mesh("conduct", "--status", cwd=d).stdout)["running"] or code == 0, f"code={code}")
@@ -608,7 +609,13 @@ def c19():
     nogit = Path(tempfile.mkdtemp(prefix="meshnogit-"))
     (nogit / ".mesh").mkdir()
     r = mesh("tui", cwd=nogit, input="")
-    check("a folder that is not a git repo is refused with advice", r.returncode != 0 and "git" in r.stderr and "Traceback" not in r.stderr, r.stderr[:200])
+    check("without a terminal the app says so (and does not hang)", r.returncode == 2 and "interactive terminal" in r.stderr, r.stderr[:200])
+    pa = PtyApp(nogit); pa.pump(4.0)
+    check("in a terminal, a folder that is not a git repo is refused with advice", "not a git repository" in pa.text().replace("\n", " ") or b"git repository" in pa.raw, pa.text()[:300])
+    try:
+        os.waitpid(pa.pid, 0)
+    except ChildProcessError:
+        pass
     r = mesh("up", "build a thing", cwd=d, input="")
     check("`mesh up \"prompt\"` without a TTY fails cleanly", "Traceback" not in r.stderr, (r.stderr or r.stdout)[-200:])
     r1 = mesh("conduct", "--daemon", cwd=d); r2 = mesh("conduct", "--daemon", cwd=d)

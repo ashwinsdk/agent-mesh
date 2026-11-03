@@ -56,7 +56,8 @@ def status(paths: Paths) -> dict:
         return {"running": False, "pid": None, "heartbeat_age": None, "state": None}
     alive = workers.pid_alive(r["pid"], r["pid_start"])
     age = now() - (r["heartbeat"] or 0)
-    return {"running": bool(alive and age < 20), "pid": r["pid"], "heartbeat_age": age, "state": r["state"], "version": r["version"], "run": r["run_id"]}
+    # it heartbeats every tick (~1s); a stale beat means hung or exiting, i.e. not available
+    return {"running": bool(alive and age < 8), "pid": r["pid"], "heartbeat_age": age, "state": r["state"], "version": r["version"], "run": r["run_id"]}
 
 
 def start_daemon(paths: Paths) -> int | None:
@@ -79,7 +80,8 @@ def start_daemon(paths: Paths) -> int | None:
     return p.pid
 
 
-def stop_daemon(paths: Paths) -> bool:
+def stop_daemon(paths: Paths, wait: float = 20.0) -> bool:
+    """SIGTERM the conductor and WAIT until it is gone, so a following start never mistakes an exiting process for a live one."""
     st = status(paths)
     if not st["pid"]:
         return False
@@ -87,6 +89,9 @@ def stop_daemon(paths: Paths) -> bool:
         os.kill(st["pid"], signal.SIGTERM)
     except ProcessLookupError:
         return False
+    end = time.time() + wait
+    while time.time() < end and workers.pid_alive(st["pid"]):
+        time.sleep(0.1)
     return True
 
 
@@ -629,10 +634,32 @@ class Conductor:
         runs.add_attention(db, rid, "error", f"final-{rid}", "Final validation failed on the integration branch", (res.get("out") or "")[-1500:])
         return ["run:failed"]
 
+    def start_beat(self) -> None:
+        """Liveness must not depend on the scheduling loop: a tick can legitimately block for minutes (merging and running the
+        project's tests). A tiny thread with its own connection keeps the heartbeat fresh so a healthy conductor is never reported dead."""
+        import threading
+
+        def beat():
+            db = DB(self.paths, busy_ms=3000)
+            try:
+                while not self.stop_flag:
+                    try:
+                        with db.tx() as c:
+                            c.execute("UPDATE conductor SET heartbeat=? WHERE id=1 AND pid=?", (now(), os.getpid()))
+                    except Exception:
+                        pass
+                    time.sleep(1.0)
+            finally:
+                db.close()
+        self._beat = threading.Thread(target=beat, daemon=True, name="mesh-conductor-beat")
+        self._beat.start()
+
     # -- main loop
     def run_forever(self) -> None:
         signal.signal(signal.SIGTERM, lambda *a: setattr(self, "stop_flag", True))
         signal.signal(signal.SIGINT, lambda *a: setattr(self, "stop_flag", True))
+        self.heartbeat(runs.active_run(self.db))  # register pid immediately so status() is truthful from the first second
+        self.start_beat()
         tick = self.cfg()["conductor"]["tick_seconds"]
         idle_exit = self.cfg()["conductor"]["idle_exit_seconds"]
         while not self.stop_flag:

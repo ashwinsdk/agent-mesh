@@ -719,6 +719,7 @@ class MeshApp(App):
         self._quit_armed = 0.0
         self._started_conductor = False
         self._echoed: list[str] = []
+        self._revived = 0.0
         self._att_index = 0
         self._cmd_seen = self._max_command_id()
         self.snap = snapshot.build(paths)
@@ -811,6 +812,11 @@ class MeshApp(App):
         except (sqlite3.Error, OSError):
             return
         self.snap = snap
+        if snap.get("pending_commands") and not snap["conductor"]["running"] and time.time() - self._revived > 10:
+            self._revived = time.time()
+            self._started_conductor = False
+            self.start_conductor()  # commands are waiting but nothing is processing them (it exited or was stopped): bring it back
+            self.say("The conductor was not running; restarting it.", "warn")
         tt = top_text(snap)
         self.top_str = tt.plain
         self._set("top", tt, lambda w, v: w.update(v))
