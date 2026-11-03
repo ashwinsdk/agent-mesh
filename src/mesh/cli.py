@@ -69,7 +69,9 @@ def p_out(x):
 
 
 def build_parser():
+    from . import __version__
     ap = argparse.ArgumentParser(prog="mesh", description="Multi-agent coordination for any repository")
+    ap.add_argument("--version", action="version", version=f"agent-mesh {__version__}")
     ap.add_argument("--as", dest="actor", help="acting session id (default: $MESH_SESSION)")
     ap.add_argument("--json", action="store_true")
     sub = ap.add_subparsers(dest="cmd", required=True)
@@ -319,6 +321,10 @@ def cmd_doctor(db, a, actor):
     except MeshError as e:
         print(f"WARNING {e}")
     print(f"workers: {_w.active_count(db)} active; reconciled: {_w.reconcile(db) or 'consistent'}")
+    from . import health as _health
+    print("\n== Health")
+    for lvl, txt in _health.checks(db):
+        print(f"{'ok  ' if lvl == 'ok' else lvl.upper():<5} {txt}")
     errlog = db.paths.logs / "hook-errors.log"
     if errlog.exists():
         print(f"WARNING hook errors logged: {errlog} ({errlog.stat().st_size} bytes)")

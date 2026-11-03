@@ -202,6 +202,11 @@ def call(db: DB, cli: str, prompt: str, schema: dict, resume_id: str | None, tim
     import fnmatch
     env = {k: v for k, v in os.environ.items() if k in keep or any(fnmatch.fnmatch(k, p) for p in cfg["workers"]["env_passthrough"])}
     env.update({"MESH_ROOT": str(db.paths.root), "MESH_ROLE": "orchestrator"})
+    parts = tag.split("-")
+    if parts[0] in ("plan", "brain") and len(parts) > 1 and db.one("SELECT 1 FROM sessions WHERE id=?", (f"orch-{parts[1]}",)):
+        env["MESH_SESSION"] = f"orch-{parts[1]}"  # hooks inside the planner/brain CLI belong to the orchestrator, not a new "interactive session"
+    elif parts[0] in ("limits", "probe"):
+        env["MESH_NOHOOK"] = "1"
     env.update(extra)
     cwd = sandbox(db, tag.split("-")[0])
     try:
@@ -282,6 +287,7 @@ Already-existing mesh tasks (do not duplicate finished work):
 - "validation_cmd": the project's overall test/build command if you can tell (e.g. `npm run build`), else "".
 - "decisions": architecture decisions every agent must follow (stack, structure, conventions).
 - Use only the role ids listed above.
+- Be economical: this repository is usually small. Do NOT run commands or edit files, and read at most a handful of files (README, package manifest) before answering. For a small request, answer directly with a small plan.
 
 ## Output
 A single JSON object matching this JSON Schema (no prose, no markdown):

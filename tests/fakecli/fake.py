@@ -53,6 +53,8 @@ if "MESH_PLAN_REQUEST" in prompt or "MESH_BRAIN_TURN" in prompt:
     body = (seq[min(n_, len(seq) - 1)] if seq else one)
     if body is None:
         body = {"actions": []} if kind == "brain" else {}
+    if os.environ.get("FAKE_PLAN_DELAY"):
+        time.sleep(float(os.environ["FAKE_PLAN_DELAY"]))
     if os.environ.get("FAKE_PLANNER_FAIL"):
         sys.stderr.write("planner exploded\n"); sys.exit(2)
     text = body if isinstance(body, str) else json.dumps(body)

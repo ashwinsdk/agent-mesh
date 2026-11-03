@@ -40,8 +40,31 @@ def redact(text: str) -> str:
     return text
 
 
+SAFE_ARTIFACTS = {"__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules", "dist", "build", ".cache", ".next", ".turbo", "coverage", ".venv", "venv", "target"}
+_RM = re.compile(r"^\s*(?:sudo\s+)?rm\s+(.*)$")
+
+
+def _safe_rm(args: str) -> bool:
+    """True if `rm -rf <targets>` only removes disposable build artefacts by RELATIVE path (no absolute, ~, $VAR, .., bare * or .)."""
+    import shlex
+    try:
+        toks = shlex.split(args)
+    except ValueError:
+        return False
+    flags = [t for t in toks if t.startswith("-")]
+    targets = [t for t in toks if not t.startswith("-")]
+    if not targets or not any("r" in f.lower() for f in flags):
+        return False
+    for t in targets:
+        if t.startswith(("/", "~", "$")) or ".." in t.split("/") or t.strip("/.*") == "":
+            return False
+        leaf = t.rstrip("/").split("/")[-1]
+        if not (leaf in SAFE_ARTIFACTS or leaf.endswith(".pyc") or (leaf == "*.pyc")):
+            return False
+    return True
+
+
 DESTRUCTIVE = [
-    (re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r)\b"), "recursive force delete"),
     (re.compile(r"\bgit\s+push\b.*(--force\b|-f\b|--force-with-lease)"), "force push"),
     (re.compile(r"\bgit\s+reset\s+--hard\b"), "git reset --hard"),
     (re.compile(r"\bgit\s+clean\s+-[a-zA-Z]*f"), "git clean -f"),
@@ -56,8 +79,16 @@ DESTRUCTIVE = [
 ]
 
 
+_RM_RF = re.compile(r"\brm\s+(-[a-zA-Z]*r[a-zA-Z]*f|-[a-zA-Z]*f[a-zA-Z]*r|-r\s+-f|-f\s+-r)\b")
+
+
 def check_command(cmd: str) -> str | None:
     """Return a human-readable reason if the command needs explicit human approval."""
+    for seg in re.split(r"&&|\|\||;|\n", cmd):
+        if _RM_RF.search(seg):
+            m = _RM.match(seg.strip())
+            if not (m and _safe_rm(m.group(1))):
+                return "recursive force delete"
     for rx, why in DESTRUCTIVE:
         if rx.search(cmd):
             return why

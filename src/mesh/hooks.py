@@ -211,6 +211,8 @@ def _pre_tool(db: DB, cli: str, sid: str, n: dict, cfg: dict) -> tuple[str, int]
 
 def run(cli: str, event: str) -> int:
     """stdin JSON -> stdout JSON. Any internal failure => exit 0, no output (fail open), logged."""
+    if os.environ.get("MESH_NOHOOK") == "1":
+        return 0  # utility CLI runs (limits/probe) must not register sessions or add noise
     try:
         raw = sys.stdin.read()
         payload = json.loads(raw) if raw.strip() else {}

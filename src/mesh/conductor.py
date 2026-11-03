@@ -200,7 +200,7 @@ class Conductor:
                       "ON CONFLICT(id) DO UPDATE SET pid=excluded.pid, pid_start=excluded.pid_start, heartbeat=excluded.heartbeat, state=excluded.state, run_id=excluded.run_id, version=excluded.version",
                       (os.getpid(), workers.proc_start(os.getpid()), self.started, now(), run["status"] if run else "idle", run["id"] if run else None, __version__))
             c.execute("UPDATE sessions SET last_seen=? WHERE role='orchestrator' AND status='active'", (now(),))
-            busy = any(k[0] == "brain" for k in self.futs)
+            busy = any(k[0] in ("brain", "plan") for k in self.futs)
             c.execute("INSERT INTO meta(key,value) VALUES('brain_busy',?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", ("1" if busy else "0",))
 
     def cfg(self) -> dict:

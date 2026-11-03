@@ -44,6 +44,20 @@ def worktree_remove(db: DB, task_id: str) -> None:
         git(db.paths.root, "worktree", "remove", "--force", str(path))
 
 
+_BASELINE: dict[tuple[str, str], tuple[bool, str]] = {}
+
+
+def baseline(db: DB, cfg: dict, iw: Path) -> tuple[bool, str]:
+    """Does the project's validation pass on the integration branch *as it is now* (cached per commit)?
+    A task must be blamed only for failures it introduces: if the baseline is already red (e.g. the tests directory does not exist
+    yet because a later task creates it), the same red on a task's branch says nothing about that task."""
+    sha = git(db.paths.root, "rev-parse", "HEAD", cwd=iw, check=False).stdout.strip()
+    key = (str(db.paths.root), sha)
+    if key not in _BASELINE:
+        _BASELINE[key] = run_validation(iw, cfg)
+    return _BASELINE[key]
+
+
 def run_validation(cwd: Path, cfg: dict) -> tuple[bool, str]:
     cmd = cfg["validation"]["test"]
     if not cmd:
@@ -64,7 +78,8 @@ def _integration_wt(db: DB, cfg: dict, base: str) -> Path:
 
 
 def integrate(db: DB, task_id: str, actor: str = "integrator") -> dict:
-    """Never silently discards work. Returns {'ok': bool, 'stage': str, 'detail': str}."""
+    """Never silently discards work. Returns {'ok': bool, 'stage': str, 'detail': str}.
+    Validation is judged against the integration branch's baseline: new failures block a merge, pre-existing ones do not."""
     cfg = load_config(db.paths)
     root = db.paths.root
     t = tasks.get(db, task_id)
@@ -77,11 +92,14 @@ def integrate(db: DB, task_id: str, actor: str = "integrator") -> dict:
         if dirty:
             return {"ok": False, "stage": "precheck", "detail": "worktree has uncommitted changes; commit them first"}
     base = base_branch(db)
+    iw = _integration_wt(db, cfg, base)
+    base_ok, base_out = baseline(db, cfg, iw)
     ok, out = run_validation(wt if wt.exists() else root, cfg)
-    if not ok:
+    if not ok and base_ok:
         _rework(db, t, actor, "validation failed on task branch", out)
         return {"ok": False, "stage": "validate", "detail": out}
-    iw = _integration_wt(db, cfg, base)
+    if not ok:
+        db.event(actor, "integrate.baseline_red", task_id, {"note": "validation already failing on the integration branch; not blamed on this task"})
     prev = git(root, "rev-parse", "HEAD", cwd=iw).stdout.strip()
     mt = git(root, "merge-tree", "--write-tree", "--name-only", "HEAD", branch, cwd=iw, check=False)
     if mt.returncode != 0:
@@ -97,7 +115,7 @@ def integrate(db: DB, task_id: str, actor: str = "integrator") -> dict:
         _rework(db, t, actor, "merge failed", m.stderr)
         return {"ok": False, "stage": "merge", "detail": m.stderr}
     ok, out = run_validation(iw, cfg)
-    if not ok:
+    if not ok and base_ok:  # it was green before this merge and is red after it: this task broke it
         git(root, "reset", "--hard", prev, cwd=iw)  # only our own throwaway integration worktree
         _rework(db, t, actor, "tests failed after merge", out)
         db.event(actor, "integrate.revert", task_id, {"to": prev})
@@ -106,7 +124,7 @@ def integrate(db: DB, task_id: str, actor: str = "integrator") -> dict:
         # the integrator acts across owners by design; ownership checks are bypassed explicitly and audited
         tasks.transition(db, task_id, "REVIEW", actor, "integrated; awaiting acceptance", force=True)
     tasks.transition(db, task_id, "COMPLETED", actor, f"integrated into {cfg['git']['integration_branch']}", force=True)
-    db.event(actor, "integrate.ok", task_id, {"branch": branch})
+    db.event(actor, "integrate.ok", task_id, {"branch": branch, "baseline_green": base_ok})
     return {"ok": True, "stage": "done", "detail": f"merged into {cfg['git']['integration_branch']} (promote to {base} is a human step: `mesh promote`)"}
 
 

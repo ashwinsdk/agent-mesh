@@ -110,7 +110,7 @@ def agent_rows(snap: dict) -> list[tuple]:
             name, role = short(titles.get(a["task"]) or a["name"] or a["id"], 22), (a["name"] or "")
             name_style = TEXT if a.get("bucket") == "live" else MUTED
         else:
-            name, role = f"{a['cli']} session {a['id'].split('-')[-1][:6]}", "interactive"
+            name, role = f"{a['cli']} · {a['id'].split('-')[-1][:6]}", "interactive"
             name_style = TEXT if a.get("bucket") == "live" else MUTED
         label = STATE_LABEL.get(a["state"], a["state"].lower())
         rows.append((a["id"], Text(g, style=col), Text(name, style=name_style), Text(role, style=MUTED), Text(a["cli"], style=MUTED),
@@ -180,7 +180,7 @@ def limit_lines(snap: dict, clis: list[str]) -> list[Text]:
         elif cli == "claude":
             continue  # Claude's windows come from its statusline; nothing to explain when absent
         elif L["checked"] is None:
-            out.append(Text("  daily / weekly limits: not fetched yet. Type /limits (runs the CLI's own /usage; no model).", style=MUTED))
+            out.append(Text("  limits: not fetched · type /limits", style=MUTED))
         elif not L["ok"]:
             out.append(Text(f"  limits unavailable: {short(L['error'] or 'the CLI did not answer', 60)}", style=AMBER))
         else:
@@ -656,6 +656,8 @@ DataTable:focus > .datatable--cursor {{ background: {ELEV}; color: {CYAN}; text-
 Input > .input--placeholder {{ color: {MUTED}; }}
 Input > .input--cursor {{ background: {CYAN}; color: {BG}; }}
 Input > .input--suggestion {{ color: {MUTED}; }}
+* {{ scrollbar-background: {SURFACE}; scrollbar-background-hover: {ELEV}; scrollbar-background-active: {ELEV};
+     scrollbar-color: {ELEV}; scrollbar-color-hover: {MUTED}; scrollbar-color-active: {CYAN}; scrollbar-corner-color: {SURFACE}; }}
 Footer {{ background: {SURFACE}; color: {MUTED}; }}
 FooterKey {{ background: {SURFACE}; }}
 FooterKey .footer-key--key {{ color: {CYAN}; background: {SURFACE}; text-style: bold; }}
@@ -778,6 +780,8 @@ class MeshApp(App):
     def say(self, text: str, level: str = "info") -> None:
         if not text:
             return
+        if self.activity_lines and self.activity_lines[-1] == text:
+            return  # never print the same line twice in a row (e.g. pressing Enter repeatedly on a row)
         self.activity_lines.append(text)
         self.query_one("#activity", RichLog).write(Text(f"  {text}", style=LEVEL_STYLE.get(level, TEXT)))
 
@@ -899,7 +903,7 @@ class MeshApp(App):
             if any(a["id"] == key and a["kind"] == "worker" for a in self.snap["agents"]):
                 self.push_screen(AgentScreen(key))
             else:
-                self.say("Only headless workers have a live output view. Press k to kill or c to clear this session.", "info")
+                self.say("No live output for this session (only headless workers have one). k kills it, c clears it.", "info")
         elif ev.data_table.id == "tasks":
             if not str(key).startswith("T-") or any(t["id"] == key and t["kind"] == "epic" for t in self.snap["tasks"]["list"]):
                 return

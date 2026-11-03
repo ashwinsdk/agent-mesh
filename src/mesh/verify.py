@@ -6,7 +6,7 @@ import subprocess
 from pathlib import Path
 
 from . import bus, locks, tasks, workers
-from .core import git, load_config
+from .core import git, is_git as core_is_git_root, load_config
 from .db import DB, MeshError, now
 from .gitflow import base_branch
 
@@ -82,14 +82,25 @@ def verify(db: DB, task_id: str, actor: str) -> dict:
             ok = False
             notes.append(f"OWNERSHIP VIOLATION: changed files outside the task's declared files: {', '.join(bad[:10])}")
     notes.append(f"changed files ({len(files)}): {', '.join(files[:20]) or '-'}")
-    checks = 0
-    for label, cmd in (("task verify", t["verify_cmd"]), ("project test", cfg["validation"]["test"])):
-        if cmd:
-            checks += 1
-            passed, out = _run(cmd, wt)
-            ok &= passed
-            notes.append(f"[{label}] `{cmd}` -> {'PASS' if passed else 'FAIL'}\n{out.strip()[-600:]}")
-    weak = checks == 0
+    checks, baseline_red = 0, False
+    if t["verify_cmd"]:
+        checks += 1
+        passed, out = _run(t["verify_cmd"], wt)
+        ok &= passed
+        notes.append(f"[task verify] `{t['verify_cmd']}` -> {'PASS' if passed else 'FAIL'}\n{out.strip()[-600:]}")
+        if cfg["validation"]["test"]:
+            notes.append("[project test] not run per task: this task has its own verify command; the project tests run at merge time and at the end")
+    elif cfg["validation"]["test"]:
+        checks += 1
+        passed, out = _run(cfg["validation"]["test"], wt)
+        if not passed:
+            from . import gitflow
+            b_ok, _ = gitflow.baseline(db, cfg, gitflow._integration_wt(db, cfg, base_branch(db))) if core_is_git(db) else (True, "")
+            if not b_ok:  # already failing before this task: do not blame it, but this is not strong evidence either
+                passed, baseline_red = True, True
+        ok &= passed
+        notes.append(f"[project test] `{cfg['validation']['test']}` -> {'PASS' if passed else 'FAIL'}" + (" (already failing on the integration branch; not blamed on this task)" if baseline_red else "") + f"\n{out.strip()[-600:]}")
+    weak = checks == 0 or baseline_red
     if weak:
         notes.append("WEAK: no verify command or test command configured; nothing was actually executed")
     detail = "\n".join(notes)
@@ -197,3 +208,7 @@ def diff(db: DB, task_id: str) -> str:
     stat = git(db.paths.root, "diff", "--stat", rng, check=False).stdout
     body = git(db.paths.root, "diff", rng, check=False).stdout
     return stat + "\n" + (body[:20000] + ("\n…[truncated]" if len(body) > 20000 else ""))
+
+
+def core_is_git(db: DB) -> bool:
+    return core_is_git_root(db.paths.root)

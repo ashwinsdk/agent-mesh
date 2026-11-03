@@ -176,6 +176,7 @@ def run_cli(db: DB, cli: str, timeout: float = 60) -> tuple[bool, str, str | Non
     env = {k: v for k, v in os.environ.items() if k in ("PATH", "HOME", "USER", "LOGNAME", "LANG", "TERM", "TMPDIR", "SHELL", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME")
            or k.startswith(("COPILOT_", "GITHUB_TOKEN", "GH_TOKEN", "GEMINI_", "GOOGLE_", "MESH_BIN_", "FAKE_"))}
     env["MESH_ROOT"] = str(db.paths.root)
+    env["MESH_NOHOOK"] = "1"  # /usage is a report, not an agent session: keep it out of the sessions list
     last = ""
     for fmt in (("json", "text") if cli == "antigravity" else ("text",)):
         cmd = command(cli, ad, fmt)

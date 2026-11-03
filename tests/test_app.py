@@ -284,7 +284,8 @@ class TestRevamp(AppCase):
         app = ui.MeshApp(self.paths)
         async with app.run_test(size=(160, 45)) as pilot:
             await pilot.pause(0.8)
-            self.assertIn("not fetched yet", app.usage_str)  # nothing invented before the CLI has been asked
+            self.assertIn("not fetched", app.usage_str)  # nothing invented before the CLI has been asked
+            self.assertLess(max(len(l) for l in app.usage_str.splitlines()), 50)  # compact: one short line per CLI, no awkward wrapping
             self.assertIn("/limits", app.usage_str)
             with db.tx() as c:
                 for cli, win, rem, reset in (("antigravity", "daily", 62, "in 5h"), ("antigravity", "weekly", 88, "Mon 09:00"), ("copilot", "weekly", 8, "Mon 09:00")):
@@ -319,3 +320,29 @@ class TestRevamp(AppCase):
             await pilot.press("c")
             self.assertTrue(await until(pilot, lambda: any("kill it instead" in l for l in app.activity_lines), 30), app.activity_lines[-4:])
             self.assertIn(live, [a[0] for a in app.agent_view])  # still there
+
+
+@unittest.skipUnless(HAVE, "textual not installed")
+class TestPolish(AppCase):
+    async def test_repeated_messages_are_not_printed_twice_and_scrollbars_use_the_palette(self):
+        r = self.project()
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(140, 40)) as pilot:
+            await pilot.pause(0.5)
+            for _ in range(4):
+                app.say("No live output for this session.", "info")
+            self.assertEqual(app.activity_lines.count("No live output for this session."), 1)
+            self.assertIn("scrollbar-background: #171717", ui.CSS)  # no black scrollbar block like in the screenshot
+            self.assertNotIn("#000000", ui.CSS.lower())
+
+    async def test_planner_phase_shows_orchestrator_thinking_and_no_phantom_session_row(self):
+        r = self.project(); db = r.db()
+        os.environ["FAKE_PLAN_DELAY"] = "3"
+        app = ui.MeshApp(self.paths)
+        async with app.run_test(size=(150, 40)) as pilot:
+            await pilot.pause(0.5)
+            app.query_one("#prompt").value = "build something"
+            await pilot.press("enter")
+            self.assertTrue(await until(pilot, lambda: any(a[2].plain == "Orchestrator" and a[5].plain == "thinking" for a in app.agent_view), 40), app.agent_view)
+            self.assertFalse(any("interactive" in a[3].plain for a in app.agent_view))  # nothing besides the orchestrator while it plans
+            self.assertIn("planning", app.top_str)
